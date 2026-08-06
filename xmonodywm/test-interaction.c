@@ -10,8 +10,8 @@
 #include <sys/syscall.h>
 #include <linux/input-event-codes.h>
 #include <wayland-client.h>
-#include "xdg-shell-client.h"
-#include "wlr-vp-client.h"
+#include "xdg-shell-client-protocol.h"
+#include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 
 #define OUT_W 1280

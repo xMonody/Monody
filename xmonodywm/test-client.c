@@ -5,7 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <wayland-client.h>
-#include "xdg-shell-client.h"
+#include "xdg-shell-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 
 static struct wl_display *display;

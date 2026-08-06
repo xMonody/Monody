@@ -1,0 +1,361 @@
+/*
+ * server.h - shared types and cross-module declarations for xmonodywm
+ *
+ * The compositor is split into small modules (main, ipc, scene, border,
+ * toplevel, layer, output, input, pointer); everything they need to share
+ * lives here.
+ */
+
+#ifndef XMONODYWM_SERVER_H
+#define XMONODYWM_SERVER_H
+
+#define _POSIX_C_SOURCE 200809L
+
+/* all tunables (shortcuts, border radius, blur, edge grab zone) */
+#include "config.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include <wayland-server-core.h>
+#include <wayland-server-protocol.h>
+
+#include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_input_method_v2.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_output_management_v1.h>
+#include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_text_input_v3.h>
+#include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_xdg_shell.h>
+
+/* ordering of scene-graph trees (bottom to top) */
+enum scene_layer {
+	LAYER_BACKGROUND = 0, /* wlr-layer-shell background   */
+	LAYER_BOTTOM,         /* wlr-layer-shell bottom       */
+	LAYER_TOPLEVELS,      /* normal windows               */
+	LAYER_TOP,            /* wlr-layer-shell top          */
+	LAYER_OVERLAY,        /* wlr-layer-shell overlay + drag icon */
+	LAYER_COUNT,
+};
+
+/* tag stored in wlr_scene_node.data so we can find the owning object from
+ * an arbitrary hit-tested scene node (walking up the parents). */
+enum scene_tag_type {
+	TAG_TOPLEVEL,
+	TAG_LAYER,
+};
+
+struct scene_tag {
+	enum scene_tag_type type;
+	void *ptr;
+
+	struct wl_listener destroy; /* frees the tag when the node is destroyed */
+};
+
+struct ipc_client;     /* defined in ipc.c */
+struct wlr_swapchain;  /* defined in wlr/render/swapchain.h */
+struct server;
+struct toplevel;
+struct layer_surface;
+
+/* one connected input method (fcitx5/ibus); only the first one is used */
+struct ime {
+	struct server *server;
+	struct wl_list link; /* server.imes */
+
+	struct wlr_input_method_v2 *input_method;
+	struct wl_listener destroy;
+	struct wl_listener grab_keyboard;
+	struct wl_listener commit;
+	struct wl_listener keyboard_grab_destroy;
+	struct wl_listener new_popup_surface;
+
+	/* seat keyboard while the IM holds the keyboard grab */
+	struct wlr_keyboard *keyboard;
+	struct wl_listener keyboard_grab_key;
+	struct wl_listener keyboard_grab_modifiers;
+	bool keyboard_grab_destroy_added; /* grab destroy listener attached */
+
+	/* candidate window shown by the IM (fcitx5) */
+	struct wlr_scene_surface *popup_scene_surface;
+	struct wl_listener popup_destroy;
+};
+
+/* one zwp_text_input_v3 object of a client (usually one per client) */
+struct text_input {
+	struct server *server;
+	struct wl_list link; /* server.text_inputs */
+
+	struct wlr_text_input_v3 *text_input;
+	struct wl_listener destroy;
+	struct wl_listener enable;
+	struct wl_listener disable;
+	struct wl_listener commit;
+};
+
+struct toplevel {
+	struct server *server;
+	struct wlr_xdg_toplevel *xdg_toplevel;
+	struct wlr_scene_tree *scene_tree;
+	struct wlr_foreign_toplevel_handle_v1 *fthandle;
+	struct wlr_output *last_output;
+
+	/* server-side decoration (rounded border); the content tree lives inside
+	 * deco_tree so the border stays glued to the window when raised */
+	struct wlr_scene_tree *deco_tree;
+	struct wlr_scene_buffer *deco_border;
+	int deco_w, deco_h;               /* border buffer size */
+
+	/* GLSL gaussian blur behind transparent windows (terminal emulators);
+	 * deco_blur sits in deco_tree behind the content and holds the blurred
+	 * backdrop, blur_enabled tracks whether the committed buffer really
+	 * contains semi-transparent pixels */
+	struct wlr_scene_buffer *deco_blur;
+	bool blur_enabled;
+
+	/* xdg-decoration */
+	struct wlr_xdg_toplevel_decoration_v1 *decoration;
+	enum wlr_xdg_toplevel_decoration_v1_mode decoration_mode;
+	bool decoration_configured;
+
+	bool minimized;
+	bool positioned; /* initial position has been assigned */
+
+	/* geometry to restore when un-maximizing by dragging (Windows style) */
+	struct wlr_box restore_box;
+	bool has_restore_box;
+
+	/* fullscreen state (tracks current.fullscreen which only updates on ack) */
+	bool fullscreen;
+
+	/* id exposed to status bars over the IPC socket */
+	int id;
+	bool ipc_added; /* window_added was emitted */
+	char *app_id;   /* cached app_id (survives teardown for window_removed) */
+
+	struct wl_list link; /* server.toplevels */
+
+	struct wl_listener destroy;
+	struct wl_listener toplevel_destroy;
+	struct wl_listener map;
+	struct wl_listener unmap;
+	struct wl_listener commit;
+	struct wl_listener request_maximize;
+	struct wl_listener request_minimize;
+	struct wl_listener request_fullscreen;
+	struct wl_listener request_move;
+	struct wl_listener set_title;
+	struct wl_listener set_app_id;
+	struct wl_listener new_popup;
+
+	struct wl_listener ft_request_maximize;
+	struct wl_listener ft_request_minimize;
+	struct wl_listener ft_request_activate;
+	struct wl_listener ft_request_close;
+	struct wl_listener ft_destroy;
+
+	struct wl_listener deco_request_mode;
+	struct wl_listener deco_destroy;
+};
+
+struct layer_surface {
+	struct server *server;
+	struct wlr_layer_surface_v1 *layer_surface;
+	struct wlr_scene_layer_surface_v1 *scene_layer;
+
+	struct wl_list link; /* server.layer_surfaces */
+
+	struct wl_listener destroy;
+	struct wl_listener commit;
+};
+
+struct server {
+	struct wl_display *display;
+	struct wlr_backend *backend;
+	struct wlr_renderer *renderer;
+	struct wlr_allocator *allocator;
+
+	struct wlr_scene *scene;
+	struct wlr_scene_tree *layers[LAYER_COUNT];
+	struct wlr_output_layout *output_layout;
+	struct wlr_output_manager_v1 *output_manager;
+	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
+
+	struct wlr_seat *seat;
+	struct wlr_cursor *cursor;
+	struct wlr_xcursor_manager *xcursor_manager;
+	struct wl_list keyboards; /* struct keyboard.link (per attached device) */
+
+	struct wl_list toplevels;      /* struct toplevel.link */
+	struct wl_list layer_surfaces; /* struct layer_surface.link */
+	struct toplevel *focused;
+
+	/* input method relay (fcitx5 / ibus) */
+	struct wl_list imes;            /* struct ime.link */
+	struct wl_list text_inputs;     /* struct text_input.link */
+	struct wlr_input_method_v2 *input_method;     /* active input method */
+	struct wlr_text_input_v3 *focused_text_input; /* text input of the focused surface */
+
+	/* IPC socket for status bars (JSON events) */
+	int ipc_fd;
+	struct wl_event_source *ipc_source;
+	struct wl_list ipc_clients; /* ipc_client.link */
+	uint32_t next_window_id;
+
+	/* blur module: swapchain used to snapshot the scene behind a window
+	 * (sized to the output it was created for) */
+	struct wlr_swapchain *blur_swapchain;
+	int blur_swapchain_w, blur_swapchain_h;
+
+	struct wlr_scene_tree *drag_tree;
+
+	/* pointer interaction state */
+	struct toplevel *zone_toplevel; /* toplevel under an active zone press */
+	bool zone_press;                /* press in the top-10px zone, swallowed */
+	bool moving;                    /* a window move is in progress */
+	struct toplevel *move_toplevel;
+	double grab_x, grab_y; /* cursor offset from the window origin */
+	double press_x, press_y;
+	bool dragged;       /* moved beyond CONFIG_DRAG_THRESHOLD during a press */
+	bool close_pending; /* second click of a double click is armed */
+	struct timespec last_release_time;
+	bool last_was_click;
+	uint32_t last_click_button;
+
+	/* edge resize state */
+	bool resizing;
+	struct toplevel *resize_toplevel;
+	uint32_t resize_edges;     /* enum wlr_edges */
+	struct wlr_box resize_orig; /* window box at grab start */
+
+	/* current compositor-driven cursor name, NULL when the client's cursor
+	 * is shown (used to avoid redundant updates) */
+	const char *cursor_override;
+
+	/* last cursor image the focused client set (wl_pointer.set_cursor);
+	 * restored by pointer.c when the compositor cursor override ends so
+	 * the cursor doesn't stay stuck on resize/move */
+	struct wlr_surface *client_cursor_surface;
+	int client_cursor_hotspot_x, client_cursor_hotspot_y;
+	struct wl_listener client_cursor_destroy;
+
+	struct wl_listener new_output;
+	struct wl_listener new_input;
+	struct wl_listener new_virtual_pointer;
+	struct wl_listener new_virtual_keyboard;
+	struct wl_listener layout_change;
+	struct wl_listener output_manager_apply;
+	struct wl_listener output_manager_test;
+	struct wl_listener new_xdg_toplevel;
+	struct wl_listener new_layer_surface;
+	struct wl_listener new_decoration;
+	struct wl_listener new_ime;
+	struct wl_listener new_text_input;
+	struct wl_listener cursor_motion;
+	struct wl_listener cursor_motion_absolute;
+	struct wl_listener cursor_button;
+	struct wl_listener cursor_axis;
+	struct wl_listener cursor_frame;
+	struct wl_listener seat_request_set_cursor;
+	struct wl_listener seat_request_set_selection;
+	struct wl_listener seat_request_set_primary_selection;
+	struct wl_listener seat_request_start_drag;
+	struct wl_listener seat_start_drag;
+};
+
+/* ---- main.c ---- */
+void spawn_command(const char *cmd);
+
+/* ---- scene.c: scene-graph tagging / hit-testing ---- */
+void xdg_surface_tag(struct wlr_scene_tree *tree, enum scene_tag_type type,
+	void *ptr);
+void *scene_tag_at(struct server *server, enum scene_tag_type type,
+	double lx, double ly);
+struct toplevel *toplevel_at(struct server *server);
+
+/* ---- toplevel.c: xdg-shell windows, window state, decorations ---- */
+void toplevel_box(struct toplevel *tl, struct wlr_box *box);
+struct wlr_output *toplevel_output(struct server *server,
+	struct toplevel *tl);
+struct toplevel *neighbor_toplevel(struct server *server,
+	struct toplevel *tl, bool next, bool include_minimized);
+void close_toplevel(struct toplevel *tl);
+void set_fullscreen(struct server *server, struct toplevel *tl,
+	bool fullscreen);
+void set_maximized(struct server *server, struct toplevel *tl,
+	bool maximized);
+void restore_maximized_toplevel(struct toplevel *tl);
+void set_minimized(struct server *server, struct toplevel *tl,
+	bool minimized);
+void focus_toplevel(struct server *server, struct toplevel *tl);
+void update_toplevel_output(struct server *server, struct toplevel *tl);
+void server_new_toplevel(struct wl_listener *listener, void *data);
+void server_new_decoration(struct wl_listener *listener, void *data);
+
+/* ---- border.c: rounded server-side border ---- */
+bool border_buffer_no_input(struct wlr_scene_buffer *buffer,
+	double *sx, double *sy);
+void update_toplevel_decoration(struct toplevel *tl);
+
+/* ---- blur.c: GLSL gaussian background blur for transparent windows ---- */
+void blur_toplevel_init(struct toplevel *tl);
+void blur_toplevel_commit(struct toplevel *tl);
+void blur_toplevel_update(struct toplevel *tl);
+void blur_refresh_output(struct server *server,
+	struct wlr_scene_output *scene_output);
+void blur_finish(struct server *server);
+
+/* ---- layer.c: wlr-layer-shell + work area ---- */
+void get_work_area(struct server *server, struct wlr_output *output,
+	struct wlr_box *area);
+void server_new_layer_surface(struct wl_listener *listener, void *data);
+
+/* ---- output.c: monitors + output management ---- */
+void server_new_output(struct wl_listener *listener, void *data);
+void server_layout_change(struct wl_listener *listener, void *data);
+void output_manager_apply(struct wl_listener *listener, void *data);
+void output_manager_test(struct wl_listener *listener, void *data);
+
+/* ---- input.c: seat, keyboard, shortcuts ---- */
+void focus_window(struct server *server, struct toplevel *tl);
+void seat_request_set_cursor(struct wl_listener *listener, void *data);
+void seat_request_set_selection(struct wl_listener *listener, void *data);
+void seat_request_set_primary_selection(struct wl_listener *listener,
+	void *data);
+void seat_request_start_drag(struct wl_listener *listener, void *data);
+void seat_start_drag(struct wl_listener *listener, void *data);
+void server_new_virtual_pointer(struct wl_listener *listener, void *data);
+void server_new_virtual_keyboard(struct wl_listener *listener, void *data);
+void server_new_input(struct wl_listener *listener, void *data);
+
+/* ---- ime.c: input method relay (fcitx5 / ibus) ---- */
+void ime_set_focus(struct server *server, struct wlr_surface *surface);
+void ime_attach_keyboard(struct server *server,
+	struct wlr_keyboard *keyboard);
+void ime_detach_keyboard(struct server *server,
+	struct wlr_keyboard *keyboard);
+/* true if the input method's keyboard grab is connected to this keyboard */
+bool ime_keyboard_grabbed(struct server *server,
+	struct wlr_keyboard *keyboard);
+void ime_update_popup(struct server *server);
+void ime_new_input_method(struct wl_listener *listener, void *data);
+void ime_new_text_input(struct wl_listener *listener, void *data);
+
+/* ---- pointer.c: cursor interaction (move / resize / gestures) ---- */
+void begin_move(struct server *server, struct toplevel *tl,
+	double ref_x, double ref_y);
+void end_move(struct server *server);
+void end_resize(struct server *server);
+void update_cursor_style(struct server *server);
+void cursor_motion(struct wl_listener *listener, void *data);
+void cursor_motion_absolute(struct wl_listener *listener, void *data);
+void cursor_button(struct wl_listener *listener, void *data);
+void cursor_axis(struct wl_listener *listener, void *data);
+void cursor_frame(struct wl_listener *listener, void *data);
+
+#endif /* XMONODYWM_SERVER_H */

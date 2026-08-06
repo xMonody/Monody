@@ -1,2 +1,0 @@
-option('wlroots_protocol_dir', type: 'string', value: '',
-	description: 'Directory containing the generated wlroots protocol headers (e.g. wlr-layer-shell-unstable-v1-protocol.h). Needed when the wlroots installation doesn\'t ship them.')

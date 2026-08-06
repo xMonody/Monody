@@ -1,0 +1,128 @@
+[
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/protocol_stubs.dir/protocol/xdg-shell-protocol.c.o -c /home/roots/aiwm/xmonodywm/build/protocol/xdg-shell-protocol.c",
+  "file": "/home/roots/aiwm/xmonodywm/build/protocol/xdg-shell-protocol.c",
+  "output": "CMakeFiles/protocol_stubs.dir/protocol/xdg-shell-protocol.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/protocol_stubs.dir/protocol/xdg-decoration-unstable-v1-protocol.c.o -c /home/roots/aiwm/xmonodywm/build/protocol/xdg-decoration-unstable-v1-protocol.c",
+  "file": "/home/roots/aiwm/xmonodywm/build/protocol/xdg-decoration-unstable-v1-protocol.c",
+  "output": "CMakeFiles/protocol_stubs.dir/protocol/xdg-decoration-unstable-v1-protocol.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/protocol_stubs.dir/protocol/wlr-virtual-pointer-unstable-v1-protocol.c.o -c /home/roots/aiwm/xmonodywm/build/protocol/wlr-virtual-pointer-unstable-v1-protocol.c",
+  "file": "/home/roots/aiwm/xmonodywm/build/protocol/wlr-virtual-pointer-unstable-v1-protocol.c",
+  "output": "CMakeFiles/protocol_stubs.dir/protocol/wlr-virtual-pointer-unstable-v1-protocol.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/protocol_stubs.dir/protocol/virtual-keyboard-unstable-v1-protocol.c.o -c /home/roots/aiwm/xmonodywm/build/protocol/virtual-keyboard-unstable-v1-protocol.c",
+  "file": "/home/roots/aiwm/xmonodywm/build/protocol/virtual-keyboard-unstable-v1-protocol.c",
+  "output": "CMakeFiles/protocol_stubs.dir/protocol/virtual-keyboard-unstable-v1-protocol.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/protocol_stubs.dir/protocol/input-method-unstable-v2-protocol.c.o -c /home/roots/aiwm/xmonodywm/build/protocol/input-method-unstable-v2-protocol.c",
+  "file": "/home/roots/aiwm/xmonodywm/build/protocol/input-method-unstable-v2-protocol.c",
+  "output": "CMakeFiles/protocol_stubs.dir/protocol/input-method-unstable-v2-protocol.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/protocol_stubs.dir/protocol/text-input-unstable-v3-protocol.c.o -c /home/roots/aiwm/xmonodywm/build/protocol/text-input-unstable-v3-protocol.c",
+  "file": "/home/roots/aiwm/xmonodywm/build/protocol/text-input-unstable-v3-protocol.c",
+  "output": "CMakeFiles/protocol_stubs.dir/protocol/text-input-unstable-v3-protocol.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/main.c.o -c /home/roots/aiwm/xmonodywm/src/main.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/main.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/main.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/ipc.c.o -c /home/roots/aiwm/xmonodywm/src/ipc.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/ipc.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/ipc.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/scene.c.o -c /home/roots/aiwm/xmonodywm/src/scene.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/scene.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/scene.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/ime.c.o -c /home/roots/aiwm/xmonodywm/src/ime.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/ime.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/ime.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/toplevel.c.o -c /home/roots/aiwm/xmonodywm/src/toplevel.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/toplevel.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/toplevel.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/border.c.o -c /home/roots/aiwm/xmonodywm/src/border.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/border.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/border.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/blur.c.o -c /home/roots/aiwm/xmonodywm/src/blur.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/blur.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/blur.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/layer.c.o -c /home/roots/aiwm/xmonodywm/src/layer.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/layer.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/layer.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/output.c.o -c /home/roots/aiwm/xmonodywm/src/output.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/output.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/output.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/input.c.o -c /home/roots/aiwm/xmonodywm/src/input.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/input.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/input.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/src -I/home/roots/aiwm/xmonodywm/build/protocol -isystem /usr/local/include/wlroots-0.19 -isystem /usr/include/libdrm -isystem /usr/include/pixman-1 -isystem /usr/include/cjson -std=gnu11 -pthread -o CMakeFiles/xmonodywm.dir/src/pointer.c.o -c /home/roots/aiwm/xmonodywm/src/pointer.c",
+  "file": "/home/roots/aiwm/xmonodywm/src/pointer.c",
+  "output": "CMakeFiles/xmonodywm.dir/src/pointer.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/test-client.dir/test-client.c.o -c /home/roots/aiwm/xmonodywm/test-client.c",
+  "file": "/home/roots/aiwm/xmonodywm/test-client.c",
+  "output": "CMakeFiles/test-client.dir/test-client.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/test-interaction.dir/test-interaction.c.o -c /home/roots/aiwm/xmonodywm/test-interaction.c",
+  "file": "/home/roots/aiwm/xmonodywm/test-interaction.c",
+  "output": "CMakeFiles/test-interaction.dir/test-interaction.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/test-ime-relay.dir/test-ime-relay.c.o -c /home/roots/aiwm/xmonodywm/test-ime-relay.c",
+  "file": "/home/roots/aiwm/xmonodywm/test-ime-relay.c",
+  "output": "CMakeFiles/test-ime-relay.dir/test-ime-relay.c.o"
+},
+{
+  "directory": "/home/roots/aiwm/xmonodywm/build",
+  "command": "/usr/bin/cc -DWLR_USE_UNSTABLE -I/home/roots/aiwm/xmonodywm/build/protocol -std=gnu11 -o CMakeFiles/test-ime-app.dir/test-ime-app.c.o -c /home/roots/aiwm/xmonodywm/test-ime-app.c",
+  "file": "/home/roots/aiwm/xmonodywm/test-ime-app.c",
+  "output": "CMakeFiles/test-ime-app.dir/test-ime-app.c.o"
+}
+]
