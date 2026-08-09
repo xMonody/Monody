@@ -90,6 +90,12 @@ public:
     /** Send the activation JSON for the window with the given id. */
     Q_INVOKABLE void activateWindow(int id);
 
+    /**
+     * Launch a process from a .desktop Exec line (field codes are stripped,
+     * quoting/expansion follows the desktop spec via /bin/sh).
+     */
+    Q_INVOKABLE void launchApp(const QString &execLine);
+
 signals:
     void windowCountChanged();
     void focusedIdChanged();

@@ -16,6 +16,10 @@ qt_add_executable(qt6-bar
     src/main.cpp
     src/BarController.cpp
     src/BarController.h
+    src/DesktopApps.cpp
+    src/DesktopApps.h
+    src/IconFinder.cpp
+    src/IconFinder.h
 )
 
 target_include_directories(qt6-bar PRIVATE
@@ -35,6 +39,7 @@ qt_add_resources(qt6-bar "qml"
     PREFIX "/"
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
     FILES qml/main.qml
+          win.png
 )
 
 install(TARGETS qt6-bar RUNTIME DESTINATION bin)

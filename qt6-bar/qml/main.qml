@@ -12,22 +12,31 @@ Window {
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus
 
+    // Corner radius of the taskbar body (0 = square corners, desktop shows through)
+    property int barRadius: 8
+
     // ---------------------------------------------------------------- chrome
     Rectangle {
         anchors.fill: parent
         color: "#f2202020"     // Win11-ish dark taskbar, slightly translucent
+        radius: barRadius
+        clip: true              // keep hairlines/content inside the rounded shape
 
         Rectangle {            // hairline top highlight
             width: parent.width
             height: 1
             anchors.top: parent.top
             color: "#26ffffff"
+            topLeftRadius: barRadius
+            topRightRadius: barRadius
         }
         Rectangle {            // hairline bottom border
             width: parent.width
             height: 1
             anchors.bottom: parent.bottom
             color: "#33000000"
+            bottomLeftRadius: barRadius
+            bottomRightRadius: barRadius
         }
     }
 
@@ -37,7 +46,7 @@ Window {
         anchors.leftMargin: 6
         anchors.rightMargin: 6
         topPadding: (parent.height - 40) / 2   // centre the 40px button row
-        spacing: 2
+        spacing: 10
 
         // ---- left icon: Windows-like logo, no function for now ----
         Item {
@@ -49,22 +58,25 @@ Window {
                 radius: 4
                 color: startMouse.containsMouse ? "#33ffffff" : "transparent"
             }
-            Item {                             // 4-pane logo, drawn, no assets
-                width: 22
-                height: 22
+            Image {                            // Windows logo from win.png
+                width: 24
+                height: 24
                 anchors.centerIn: parent
-                Rectangle { x: 0;  y: 0;  width: 10; height: 10; color: "#F25022" }
-                Rectangle { x: 12; y: 0;  width: 10; height: 10; color: "#7FBA00" }
-                Rectangle { x: 0;  y: 12; width: 10; height: 10; color: "#00A4EF" }
-                Rectangle { x: 12; y: 12; width: 10; height: 10; color: "#FFB900" }
+                source: "qrc:/win.png"
+                sourceSize: Qt.size(120, 120)
+                fillMode: Image.PreserveAspectFit
+                smooth: true
             }
             MouseArea {
                 id: startMouse
                 anchors.fill: parent
                 hoverEnabled: true
-                // no action yet
+                onClicked: launcher.visible ? closeLauncher() : openLauncher()   // start menu toggle
             }
         }
+
+        // ---- gap: win icon stays two app-gap widths away from the apps ----
+        Item { width: 10; height: 40 }
 
         // ---- running windows (one icon per window) ----
         Repeater {
@@ -116,15 +128,16 @@ Window {
                     }
                 }
 
-                // Win11 underline pill: bright when focused, faint otherwise
+                // Win11 underline pill: only shown on the focused window
                 Rectangle {
+                    visible: taskItem.focused
                     width: 14
                     height: 3
                     radius: 1.5
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 1
-                    color: taskItem.focused ? "#d9ffffff" : "#66ffffff"
+                    color: "#d9ffffff"
                 }
 
                 ToolTip {
@@ -137,29 +150,149 @@ Window {
                     id: itemMouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    onClicked: bar.activateWindow(model.id)
+                    onClicked: {
+                        bar.activateWindow(model.id)
+                        closeLauncher()
+                    }
                 }
             }
         }
 
-        // ---- right side: connection indicator (green = socket up) ----
-        Item {
-            width: 14
-            height: 40
-            Rectangle {
-                width: 8
-                height: 8
-                radius: 4
-                anchors.centerIn: parent
-                color: bar.connected ? "#7FBA00" : "#F25022"
-                ToolTip.visible: statusMouse.containsMouse
-                ToolTip.text: bar.connected ? "compositor connected" : "compositor disconnected"
-            }
-            MouseArea {
-                id: statusMouse
+    }
+
+    // ---- launcher (start menu): full-screen layer surface, see main.cpp ----
+    //      The panel sits under the win icon; a transparent click-catcher
+    //      covers the rest of the screen so any outside click closes it.
+    Window {
+        id: launcher
+        objectName: "launcherWindow"
+        visible: false
+        flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        color: "transparent"
+
+        width: Screen.width
+        height: Screen.height
+
+        // 3 rows x 4 columns, 88x96px cells
+        property int launcherCols: 4
+        property int launcherRows: 3
+        property int launcherCellW: 88
+        property int launcherCellH: 96
+        property int launcherPad: 10
+        property bool hadFocus: false
+
+        // close when the popup loses keyboard focus (after having had it)
+        onActiveChanged: {
+            if (active)
+                hadFocus = true
+            else if (hadFocus)
+                closeLauncher()
+        }
+        onClosing: closeLauncher()
+
+        // click-catcher: any click outside the panel (desktop, other windows,
+        // the taskbar itself) closes the menu - works without focus events
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onClicked: closeLauncher()
+        }
+
+        Rectangle {                          // panel chrome: same bg as the taskbar
+            x: 6
+            y: win.height + 6
+            width: launcher.launcherCols * launcher.launcherCellW + 2 * launcher.launcherPad
+            height: launcher.launcherRows * launcher.launcherCellH + 2 * launcher.launcherPad
+            radius: win.barRadius
+            color: "#f2202020"
+            border.color: "#55666666"
+            border.width: 1
+
+            GridView {
+                id: appGrid
                 anchors.fill: parent
-                hoverEnabled: true
-                onClicked: bar.debugMode = !bar.debugMode   // click the dot to toggle the debug panel
+                anchors.margins: launcher.launcherPad
+                clip: true
+                model: desktopApps
+                cellWidth: launcher.launcherCellW
+                cellHeight: launcher.launcherCellH
+                focus: true
+                Keys.onEscapePressed: closeLauncher()   // close the start menu
+
+                ScrollBar.vertical: ScrollBar {   // thin scrollbar, only when needed
+                    width: 3
+                    policy: ScrollBar.AsNeeded
+                    interactive: true
+                    contentItem: Rectangle {
+                        implicitWidth: 3
+                        radius: 1.5
+                        color: "#99ffffff"
+                    }
+                    background: Item {}
+                }
+
+                delegate: Item {
+                    width: appGrid.cellWidth
+                    height: appGrid.cellHeight
+
+                    Rectangle {              // hover feedback: same as taskbar icons
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        radius: 4
+                        color: appMouse.containsMouse ? "#26ffffff" : "transparent"
+                    }
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 5
+
+                        Image {              // themed icon
+                            id: appIcon
+                            width: 44
+                            height: 44
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            source: model.icon
+                            sourceSize: Qt.size(64, 64)
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                            visible: status === Image.Ready
+                        }
+                        Rectangle {          // fallback tile when no icon was found
+                            visible: appIcon.status !== Image.Ready
+                            width: 44
+                            height: 44
+                            radius: 10
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            color: taskbarColor.hash(model.name)
+                            Text {
+                                anchors.centerIn: parent
+                                text: model.name.charAt(0).toUpperCase()
+                                color: "#ffffff"
+                                font.pixelSize: 18
+                                font.bold: true
+                            }
+                        }
+                        Text {               // app name
+                            width: launcher.launcherCellW - 8
+                            text: model.name
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                            maximumLineCount: 1
+                            color: "#ffffff"
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    MouseArea {
+                        id: appMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onClicked: {
+                            bar.launchApp(model.exec)   // start the app from Exec=
+                            closeLauncher()
+                        }
+                    }
+                }
             }
         }
     }
@@ -202,4 +335,18 @@ Window {
             return Qt.hsla(h / 360, 0.45, 0.42, 1)
         }
     }
+
+    // ---------------------------------------------------------------- helpers
+    function openLauncher() {
+        desktopApps.reload()              // pick up newly installed apps
+        launcher.hadFocus = false
+        launcher.visible = true
+        launcher.requestActivate()
+    }
+    function closeLauncher() {
+        launcher.visible = false
+    }
+
+    // hide the launcher together with the bar (e.g. a window went fullscreen)
+    onVisibleChanged: if (!visible) closeLauncher()
 }
