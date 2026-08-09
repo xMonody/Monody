@@ -159,9 +159,22 @@ static void clear_cursor_override(struct server *server) {
 		return;
 	}
 	server->cursor_override = NULL;
-	if (server->client_cursor_surface != NULL) {
-		/* give the client its cursor image back (e.g. the terminal's text
-		 * caret after leaving the resize strip) */
+	/* only hand the pointer back to the client when the pointer is still
+	 * over that client's surface (e.g. leaving the resize strip back into
+	 * the window). If the pointer moved out to empty desktop, the stored
+	 * client cursor (e.g. the terminal's text caret) would be stale, so
+	 * fall back to the default arrow. The client draws its cursor on a
+	 * separate surface, so compare the owning clients rather than the
+	 * surfaces themselves. */
+	struct wlr_surface *focused =
+		server->seat->pointer_state.focused_surface;
+	bool over_client_surface = focused != NULL &&
+		server->client_cursor_surface != NULL &&
+		focused->resource->client ==
+			server->client_cursor_surface->resource->client;
+	wlr_log(WLR_DEBUG, "cursor: %s", over_client_surface ?
+		"restore-client" : "left_ptr");
+	if (over_client_surface) {
 		wlr_cursor_set_surface(server->cursor, server->client_cursor_surface,
 			server->client_cursor_hotspot_x,
 			server->client_cursor_hotspot_y);

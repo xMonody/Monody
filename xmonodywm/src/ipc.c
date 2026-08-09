@@ -270,6 +270,16 @@ static void ipc_send_window_list(struct server *server,
 			tl->app_id != NULL ? tl->app_id : "");
 		cJSON_AddItemToArray(arr, w);
 	}
+	/* tell (new) bars which window currently has focus so the highlight
+	 * shows immediately; 0 = nothing focused (or the focused window is
+	 * hidden/unmapped, e.g. minimized) */
+	int focused_id = 0;
+	struct toplevel *focused = server->focused;
+	if (focused != NULL && focused->xdg_toplevel->base != NULL &&
+			focused->xdg_toplevel->base->surface->mapped) {
+		focused_id = focused->id;
+	}
+	cJSON_AddNumberToObject(root, "focused_id", focused_id);
 	char *json = cJSON_PrintUnformatted(root);
 	if (json != NULL) {
 		if (target != NULL) {

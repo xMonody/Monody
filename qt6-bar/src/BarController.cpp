@@ -139,6 +139,13 @@ void BarController::onSocketConnected()
     m_reconnectTimer.stop();
     qCDebug(lcBar) << "connected to" << m_socketPath;
     emit connectedChanged();
+
+    // Ask for a fresh window snapshot. The automatic one the compositor
+    // sends on connect usually lacks focus info, so the current focused
+    // window would stay unhighlighted until the next window_focus event.
+    // Compositors that answer list_windows with a window_list (including
+    // "focused_id") let the bar show the focus right away.
+    sendLine(R"({"action":"list_windows"})");
 }
 
 void BarController::onSocketDisconnected()
@@ -206,7 +213,6 @@ void BarController::extractMessages()
 
 void BarController::handleLine(const QByteArray &line)
 {
-    qCDebug(lcBar) << "recv:" << line;
     QJsonParseError error;
     const QJsonDocument doc = QJsonDocument::fromJson(line, &error);
     if (error.error != QJsonParseError::NoError || !doc.isObject()) {
@@ -226,12 +232,32 @@ void BarController::processMessage(const QJsonObject &msg)
         // full snapshot, sent by the compositor right after we connect
         m_windows.clear();
         const QJsonArray arr = msg.value(QStringLiteral("windows")).toArray();
+
+        // The snapshot may carry the current focus. Prefer the top-level
+        // "focused_id" field, fall back to a per-window "focused" flag.
+        bool hasFocusInfo = false;
+        int snapshotFocus = -1;
         for (const QJsonValue &v : arr) {
             const QJsonObject w = v.toObject();
             const int wid = w.value(QStringLiteral("id")).toInt(-1);
             const QString appId = w.value(QStringLiteral("app_id")).toString();
             if (wid >= 0 && !appId.isEmpty())
                 m_windows.addWindow(wid, appId);
+            if (w.value(QStringLiteral("focused")).toBool(false)) {
+                hasFocusInfo = true;
+                snapshotFocus = wid;
+            }
+        }
+        if (msg.contains(QStringLiteral("focused_id"))) {
+            hasFocusInfo = true;
+            snapshotFocus = msg.value(QStringLiteral("focused_id")).toInt(-1);
+        }
+        if (hasFocusInfo) {
+            const int focus = snapshotFocus <= 0 ? -1 : snapshotFocus;
+            if (m_focusedId != focus) {
+                m_focusedId = focus;
+                emit focusedIdChanged();
+            }
         }
     } else if (event == QLatin1String("window_added") || event == QLatin1String("windows_added")) {
         const QString appId = msg.value(QStringLiteral("app_id")).toString();
@@ -292,7 +318,6 @@ void BarController::sendLine(const QByteArray &line)
 {
     if (!m_connected)
         return;
-    qCDebug(lcBar) << "send:" << line;
     m_socket.write(line);
     if (!line.endsWith('\n'))
         m_socket.write("\n");

@@ -240,6 +240,12 @@ void focus_toplevel(struct server *server, struct toplevel *tl) {
 			tl->xdg_toplevel->base->surface, NULL, 0, NULL);
 	}
 	wlr_scene_node_raise_to_top(raise);
+	/* repaint the borders: the new focused window switches to the focused
+	 * color, the previously focused one to the unfocused color */
+	if (prev != NULL) {
+		update_toplevel_decoration(prev);
+	}
+	update_toplevel_decoration(tl);
 	/* tell the input method which surface now owns text input */
 	ime_set_focus(server, tl->xdg_toplevel->base->surface);
 	/* notify status bars that the focus changed */

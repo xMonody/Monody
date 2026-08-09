@@ -3,15 +3,16 @@
 Mock compositor for testing qt6-bar, following the xmonodywm IPC protocol:
 
   compositor -> bar (newline-delimited JSON):
-    {"event":"window_list","windows":[{"id":1,"app_id":"firefox"}]}   on connect
+    {"event":"window_list","windows":[{"id":1,"app_id":"firefox"}],
+     "focused_id":1}                            on connect (focused_id optional)
     {"event":"window_added","id":1,"app_id":"firefox"}
     {"event":"window_removed","id":1}
-    {"event":"window_focus","id":1}                                   id 0 clears
-    {"event":"window_full","id":1}                                    enter AND exit
+    {"event":"window_focus","id":1}          id 0 clears
+    {"event":"window_full","id":1}           enter AND exit
 
   bar -> compositor:
     {"action":"focus_window","id":1}
-    {"action":"list_windows"}
+    {"action":"list_windows"}                 answered with a fresh window_list
     {"action":"close_window","id":1}
 
 Commands (typed at the "mock>" prompt):
@@ -41,6 +42,7 @@ def main():
     clients = set()
     lock = threading.Lock()
     windows = {}  # id -> app_id
+    focused_id = 0
 
     def reader(conn):
         buf = b""
@@ -55,6 +57,12 @@ def main():
                     line = line.strip()
                     if line:
                         print(f"[mock] <- bar sent: {line.decode()}")
+                        try:
+                            msg = json.loads(line)
+                            if msg.get("action") == "list_windows":
+                                send_window_list(target=conn)
+                        except json.JSONDecodeError:
+                            pass
         except OSError:
             pass
         finally:
@@ -65,7 +73,11 @@ def main():
             print(f"[mock] bar disconnected ({n} client(s) left)")
 
     def send_window_list(target=None):
-        payload = {"event": "window_list", "windows": [{"id": i, "app_id": a} for i, a in sorted(windows.items())]}
+        payload = {
+            "event": "window_list",
+            "windows": [{"id": i, "app_id": a} for i, a in sorted(windows.items())],
+            "focused_id": focused_id,
+        }
         msg = (json.dumps(payload) + "\n").encode()
         with lock:
             targets = [target] if target else list(clients)
@@ -121,9 +133,12 @@ def main():
         elif op == "rm" and len(parts) >= 2:
             wid = int(parts[1])
             windows.pop(wid, None)
+            if focused_id == wid:
+                focused_id = 0
             broadcast({"event": "window_removed", "id": wid})
         elif op == "focus" and len(parts) >= 2:
             wid = max(int(parts[1]), 0)   # -1 -> 0 (clear)
+            focused_id = wid
             broadcast({"event": "window_focus", "id": wid})
         elif op == "full" and len(parts) >= 2:
             broadcast({"event": "window_full", "id": int(parts[1])})

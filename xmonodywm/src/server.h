@@ -110,6 +110,7 @@ struct toplevel {
 	struct wlr_scene_tree *deco_tree;
 	struct wlr_scene_buffer *deco_border;
 	int deco_w, deco_h;               /* border buffer size */
+	uint32_t deco_color;              /* border color the buffer was rendered with */
 
 	/* GLSL gaussian blur behind transparent windows (terminal emulators);
 	 * deco_blur sits in deco_tree behind the content and holds the blurred

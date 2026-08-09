@@ -20,18 +20,25 @@ override with `--socket <path>`), one JSON object per line.
 Compositor → bar:
 
 ```json
-{"event":"window_list","windows":[{"id":1,"app_id":"firefox"}]}  // snapshot, sent right after the bar connects
+{"event":"window_list","windows":[{"id":1,"app_id":"firefox"}],"focused_id":1}  // snapshot on connect; focused_id optional (0 = none focused)
 {"event":"window_added","id":1,"app_id":"firefox"}                  // draw icon at the end of the taskbar
 {"event":"window_removed","id":1}                                     // remove the icon
 {"event":"window_focus","id":1}                                       // highlight the icon (id 0 clears)
 {"event":"window_full","id":3}                                        // sent once on enter AND once on exit fullscreen
 ```
 
-Bar → compositor (when an icon is clicked):
+Bar → compositor:
 
 ```json
-{"action":"focus_window","id":1}
+{"action":"focus_window","id":1}   // sent when an icon is clicked
+{"action":"list_windows"}            // sent right after connecting; answer with a
+                                       // fresh window_list (with focused_id) so the
+                                       // focused icon shows immediately
 ```
+
+If the snapshot includes `focused_id` (or a per-window `focused` flag) the bar
+highlights the focused icon right away; otherwise the icon stays unhighlighted
+until the first `window_focus` event arrives.
 
 The parsing is deliberately lenient: it also accepts JSON streams without
 newlines and concatenated objects, and it reconnects automatically every

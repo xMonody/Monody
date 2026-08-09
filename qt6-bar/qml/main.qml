@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 
 // Floating taskbar, rendered as a layer-shell surface (top layer, full width).
 // Visible/shown is controlled from C++ after the surface is configured,
@@ -41,11 +42,13 @@ Window {
     }
 
     // ---------------------------------------------------------------- content
-    Row {
-        anchors.fill: parent
+    RowLayout {
+        height: 40                      // fixed button-row height
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter   // centre the 40px row in the bar
         anchors.leftMargin: 6
         anchors.rightMargin: 6
-        topPadding: (parent.height - 40) / 2   // centre the 40px button row
         spacing: 10
 
         // ---- left icon: Windows-like logo, no function for now ----
@@ -132,19 +135,15 @@ Window {
                 Rectangle {
                     visible: taskItem.focused
                     width: 14
-                    height: 3
-                    radius: 1.5
+                    height: 2
+                    radius: 1
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 1
-                    color: "#d9ffffff"
+                    color: "#d99cc9ff"          // thin light-blue focus underline
                 }
 
-                ToolTip {
-                    text: model.appId + " (id " + model.id + ")"
-                    visible: itemMouse.containsMouse
-                    delay: 500
-                }
+                // (no tooltip: hovering an icon must not show the app name)
 
                 MouseArea {
                     id: itemMouse
@@ -158,6 +157,64 @@ Window {
             }
         }
 
+        // ---- flexible spacer: keeps the clock pinned to the far right ----
+        Item {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 40
+        }
+
+        // ---- clock: time above date, Win11 style (no seconds) ----
+        Item {
+            implicitWidth: clockRow.implicitWidth + 20
+            Layout.preferredHeight: 40
+
+            Rectangle {                        // hover feedback, same as icons
+                anchors.fill: parent
+                radius: 4
+                color: clockMouse.containsMouse ? "#26ffffff" : "transparent"
+            }
+            Column {
+                id: clockRow
+                anchors.right: parent.right
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 1
+                width: Math.max(timeText.implicitWidth, dateText.implicitWidth)
+
+                Text {
+                    id: timeText
+                    width: parent.width
+                    text: Qt.formatTime(new Date(), "HH:mm")
+                    color: "#ffffff"
+                    font.pixelSize: 12
+                    font.weight: Font.Bold
+                    horizontalAlignment: Text.AlignRight
+                }
+                Text {
+                    id: dateText
+                    width: parent.width
+                    text: Qt.formatDate(new Date(), "yyyy/M/d")
+                    color: "#ffffff"
+                    font.pixelSize: 11
+                    font.weight: Font.Bold
+                    horizontalAlignment: Text.AlignRight
+                }
+            }
+            MouseArea {
+                id: clockMouse
+                anchors.fill: parent
+                hoverEnabled: true
+            }
+            Timer {
+                interval: 1000
+                running: true
+                repeat: true
+                onTriggered: {
+                    timeText.text = Qt.formatTime(new Date(), "HH:mm")
+                    dateText.text = Qt.formatDate(new Date(), "M/d/yyyy")
+                }
+            }
+        }
     }
 
     // ---- launcher (start menu): full-screen layer surface, see main.cpp ----

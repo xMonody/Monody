@@ -23,12 +23,15 @@
 
 #include "ipc.h"
 
+#include <fcntl.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <wayland-server-core.h>
@@ -48,15 +51,140 @@
 #include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/util/log.h>
 
-/* run a command in a detached child process */
+/* run a command in a detached child process:
+ *   - setsid(): new session, no controlling terminal, immune to terminal
+ *     signals (Ctrl+C, SIGHUP when the tty closes), keeps running even if
+ *     the compositor's terminal goes away
+ *   - stdin/stdout/stderr -> /dev/null: no output polluting the compositor's
+ *     tty, and the process can never block on a terminal read/write
+ *   - _exit(127) if exec fails: never fall through into the compositor */
 void spawn_command(const char *cmd) {
-	if (fork() == 0) {
-		execl("/bin/sh", "/bin/sh", "-c", cmd, (void *)NULL);
+	pid_t pid = fork();
+	if (pid != 0) {
+		return;
 	}
+	setsid();
+	int devnull = open("/dev/null", O_RDWR);
+	if (devnull >= 0) {
+		dup2(devnull, STDIN_FILENO);
+		dup2(devnull, STDOUT_FILENO);
+		dup2(devnull, STDERR_FILENO);
+		if (devnull > STDERR_FILENO) {
+			close(devnull);
+		}
+	}
+	execl("/bin/sh", "/bin/sh", "-c", cmd, (void *)NULL);
+	_exit(127);
+}
+
+/* reap spawned children (startup commands, the -s command, the terminal
+ * shortcut) so exited helpers don't pile up as zombies */
+static void reap_children(int sig) {
+	(void)sig;
+	while (waitpid(-1, NULL, WNOHANG) > 0) {
+	}
+}
+
+/* launch the user's startup commands, one per line, from
+ * $XDG_CONFIG_HOME/mywm/run (or ~/.config/mywm/run): daemons, wallpapers,
+ * output configuration, input methods, ...  Blank lines and lines starting
+ * with '#' are ignored.  Each line is run through /bin/sh -c, so ~, $VARS,
+ * quotes and shell syntax all work.  Called only after the backend is up
+ * and WAYLAND_DISPLAY is set, so the commands can talk to the compositor. */
+static void run_startup_file(void) {
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	const char *home = getenv("HOME");
+	char path[4096];
+	if (xdg != NULL && xdg[0] != '\0') {
+		snprintf(path, sizeof(path), "%s/mywm/run", xdg);
+	} else if (home != NULL && home[0] != '\0') {
+		snprintf(path, sizeof(path), "%s/.config/mywm/run", home);
+	} else {
+		return;
+	}
+
+	FILE *f = fopen(path, "r");
+	if (f == NULL) {
+		wlr_log(WLR_DEBUG, "startup: no %s, nothing to run", path);
+		return;
+	}
+
+	char *line = NULL;
+	size_t cap = 0;
+	ssize_t len;
+	while ((len = getline(&line, &cap, f)) != -1) {
+		/* strip the trailing newline / carriage return */
+		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+			line[--len] = '\0';
+		}
+		/* skip leading whitespace, blank lines and comments */
+		char *cmd = line;
+		while (*cmd == ' ' || *cmd == '\t') {
+			cmd++;
+		}
+		if (*cmd == '\0' || *cmd == '#') {
+			continue;
+		}
+		/* drop a trailing shell comment (a '#' outside quotes/escapes) and
+		 * any trailing '&' / ';' / whitespace, so every line can safely be
+		 * backgrounded below: an explicit '&' already present would turn
+		 * into a 'cmd & &' syntax error, and a trailing comment would
+		 * swallow the appended '&' */
+		char *comment = NULL;
+		char quote = '\0';
+		for (char *p = cmd; *p != '\0'; p++) {
+			if (quote != '\0') {
+				if (*p == quote) {
+					quote = '\0';
+				} else if (*p == '\\' && quote == '"') {
+					p++; /* escaped char inside double quotes */
+				}
+			} else if (*p == '\'' || *p == '"') {
+				quote = *p;
+			} else if (*p == '\\') {
+				p++; /* escaped char (e.g. \#): skip both */
+			} else if (*p == '#') {
+				comment = p;
+				break;
+			}
+		}
+		if (comment != NULL) {
+			*comment = '\0';
+		}
+		char *end = cmd + strlen(cmd);
+		while (end > cmd && (end[-1] == ' ' || end[-1] == '\t' ||
+				end[-1] == '&' || end[-1] == ';')) {
+			*--end = '\0';
+		}
+		if (*cmd == '\0') {
+			continue; /* e.g. the line was only a comment */
+		}
+		/* launch every line in the background */
+		size_t cmdlen = strlen(cmd);
+		char *bg = malloc(cmdlen + 3);
+		if (bg == NULL) {
+			continue;
+		}
+		memcpy(bg, cmd, cmdlen);
+		bg[cmdlen] = ' ';
+		bg[cmdlen + 1] = '&';
+		bg[cmdlen + 2] = '\0';
+		wlr_log(WLR_INFO, "startup: %s", bg);
+		spawn_command(bg);
+		free(bg);
+	}
+	free(line);
+	fclose(f);
 }
 
 int main(int argc, char *argv[]) {
 	wlr_log_init(WLR_INFO, NULL);
+	/* never leave spawned helpers as zombies */
+	struct sigaction chld_sa = {0};
+	chld_sa.sa_handler = reap_children;
+	sigemptyset(&chld_sa.sa_mask);
+	chld_sa.sa_flags = SA_RESTART;
+	sigaction(SIGCHLD, &chld_sa, NULL);
 
 	char *startup_cmd = NULL;
 	int c;
@@ -234,6 +362,9 @@ int main(int argc, char *argv[]) {
 	}
 
 	setenv("WAYLAND_DISPLAY", socket, true);
+	/* the Wayland socket is live: the WM is up, now start the user's
+	 * daemons from ~/.config/mywm/run (plus any -s command) */
+	run_startup_file();
 	if (startup_cmd != NULL) {
 		spawn_command(startup_cmd);
 	}
@@ -255,6 +386,34 @@ int main(int argc, char *argv[]) {
 	wlr_log(WLR_INFO, "Running Wayland compositor on WAYLAND_DISPLAY=%s",
 		socket);
 	wl_display_run(server.display);
+
+	/* wlroots asserts that the objects it owns (output layout, output
+	 * manager, seat, protocol managers, ...) are destroyed without leftover
+	 * listeners, so detach every compositor listener before teardown. The
+	 * per-surface listeners (toplevels, layer surfaces, ime, cursors) are
+	 * removed by their own destroy handlers during destroy_clients(). */
+	wl_list_remove(&server.new_output.link);
+	wl_list_remove(&server.new_input.link);
+	wl_list_remove(&server.new_virtual_pointer.link);
+	wl_list_remove(&server.new_virtual_keyboard.link);
+	wl_list_remove(&server.layout_change.link);
+	wl_list_remove(&server.output_manager_apply.link);
+	wl_list_remove(&server.output_manager_test.link);
+	wl_list_remove(&server.new_xdg_toplevel.link);
+	wl_list_remove(&server.new_layer_surface.link);
+	wl_list_remove(&server.new_decoration.link);
+	wl_list_remove(&server.new_ime.link);
+	wl_list_remove(&server.new_text_input.link);
+	wl_list_remove(&server.cursor_motion.link);
+	wl_list_remove(&server.cursor_motion_absolute.link);
+	wl_list_remove(&server.cursor_button.link);
+	wl_list_remove(&server.cursor_axis.link);
+	wl_list_remove(&server.cursor_frame.link);
+	wl_list_remove(&server.seat_request_set_cursor.link);
+	wl_list_remove(&server.seat_request_set_selection.link);
+	wl_list_remove(&server.seat_request_set_primary_selection.link);
+	wl_list_remove(&server.seat_request_start_drag.link);
+	wl_list_remove(&server.seat_start_drag.link);
 
 	ipc_server_destroy(&server);
 	blur_finish(&server);

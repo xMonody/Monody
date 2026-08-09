@@ -152,6 +152,24 @@ add_executable(test-interaction test-interaction.c)
 target_include_directories(test-interaction PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-interaction PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
 
+# cursor-style test: terminal-like client (SSD + I-beam cursor) driven by a
+# virtual pointer; verify cursor decisions via the compositor's WLR_DEBUG log
+add_executable(test-cursor test-cursor.c)
+target_include_directories(test-cursor PRIVATE ${PROTOCOL_GEN_DIR})
+target_link_libraries(test-cursor PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
+
+# border test: two toplevels + focus switches (repaint focused/unfocused
+# border colors); smoke test for the GLES2 border re-render path
+add_executable(test-border test-border.c)
+target_include_directories(test-border PRIVATE ${PROTOCOL_GEN_DIR})
+target_link_libraries(test-border PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
+
+# quit test: virtual keyboard presses Shift+Alt+q; verifies the compositor
+# shuts down cleanly (no wlroots teardown assertions)
+add_executable(test-quit test-quit.c)
+target_include_directories(test-quit PRIVATE ${PROTOCOL_GEN_DIR})
+target_link_libraries(test-quit PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
+
 # input-method relay test: app (text-input-v3) <-> IM (input-method-v2)
 add_executable(test-ime-relay test-ime-relay.c)
 target_include_directories(test-ime-relay PRIVATE ${PROTOCOL_GEN_DIR})
@@ -170,5 +188,8 @@ add_dependencies(xmonodywm protocols)
 add_dependencies(protocol_stubs protocols)
 add_dependencies(test-client protocols)
 add_dependencies(test-interaction protocols)
+add_dependencies(test-cursor protocols)
+add_dependencies(test-border protocols)
+add_dependencies(test-quit protocols)
 add_dependencies(test-ime-relay protocols)
 add_dependencies(test-ime-app protocols)

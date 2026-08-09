@@ -45,7 +45,9 @@ private:
  * Talks to the compositor over a unix socket (xmonodywm).
  *
  * Incoming JSON lines (one event per line):
- *   {"event":"window_list","windows":[{"id":1,"app_id":"firefox"}]}   (sent on connect)
+ *   {"event":"window_list","windows":[{"id":1,"app_id":"firefox"}],
+ *    "focused_id":1}                         (snapshot on connect; focused_id is
+ *                                              optional, 0/-1 = none focused)
  *   {"event":"window_added","id":1,"app_id":"firefox"}
  *   {"event":"window_removed","id":1}
  *   {"event":"window_focus","id":1}            (id 0 clears the focus)
@@ -53,6 +55,10 @@ private:
  *
  * Clicking a taskbar icon sends back:
  *   {"action":"focus_window","id":1}
+ *
+ * Right after connecting the bar also sends:
+ *   {"action":"list_windows"}    (asks for a fresh snapshot incl. focused_id
+ *                                   so the focused icon shows immediately)
  */
 class BarController : public QObject
 {

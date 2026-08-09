@@ -19,7 +19,8 @@
 
 #define CONFIG_BORDER_WIDTH 2           /* server-side border stroke width (px) */
 #define CONFIG_BORDER_RADIUS 12         /* rounded-corner radius of the border (px) */
-#define CONFIG_BORDER_COLOR 0xFF7C73B0u /* border color, 0xAARRGGBB (#7C73B0) */
+#define CONFIG_BORDER_COLOR 0xFF7C73B0u /* focused border color, 0xAARRGGBB (#7C73B0) */
+#define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u /* unfocused border color (#676E95) */
 
 /* ------------------------------------------------------------------ */
 /* window interaction                                                  */

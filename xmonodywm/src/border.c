@@ -136,10 +136,19 @@ static const struct wlr_drm_format *border_format(void) {
 	return wlr_drm_format_set_get(&set, DRM_FORMAT_ARGB8888);
 }
 
+/* the border color for a toplevel: brighter for the focused window, muted
+ * for everything else */
+static uint32_t toplevel_border_color(struct toplevel *tl) {
+	if (tl->server->focused == tl) {
+		return CONFIG_BORDER_COLOR;
+	}
+	return CONFIG_BORDER_COLOR_UNFOCUSED;
+}
+
 /* render the rounded border into a renderable buffer with a custom GLES2
  * pass on wlroots' EGL context; saves and restores all state it touches */
 static bool border_render(struct server *server, struct wlr_buffer *buffer,
-		int width, int height) {
+		int width, int height, uint32_t color) {
 	struct wlr_egl *egl = wlr_gles2_renderer_get_egl(server->renderer);
 	if (egl == NULL) {
 		return false;
@@ -190,12 +199,12 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 			(float)width, (float)height);
 		glUniform1f(glGetUniformLocation(program, "u_radius"), CONFIG_BORDER_RADIUS);
 		glUniform1f(glGetUniformLocation(program, "u_width"), CONFIG_BORDER_WIDTH);
-		/* CONFIG_BORDER_COLOR is 0xAARRGGBB */
+		/* color is 0xAARRGGBB */
 		glUniform4f(glGetUniformLocation(program, "u_color"),
-			(float)((CONFIG_BORDER_COLOR >> 16) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR >> 8) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR >> 0) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR >> 24) & 0xFF) / 255.0f);
+			(float)((color >> 16) & 0xFF) / 255.0f,
+			(float)((color >> 8) & 0xFF) / 255.0f,
+			(float)((color >> 0) & 0xFF) / 255.0f,
+			(float)((color >> 24) & 0xFF) / 255.0f);
 
 		GLint loc = glGetAttribLocation(program, "a_pos");
 		static const float verts[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
@@ -266,7 +275,8 @@ void update_toplevel_decoration(struct toplevel *tl) {
 	}
 	int bw = box.width + 2 * CONFIG_BORDER_WIDTH;
 	int bh = box.height + 2 * CONFIG_BORDER_WIDTH;
-	if (tl->deco_w != bw || tl->deco_h != bh) {
+	uint32_t color = toplevel_border_color(tl);
+	if (tl->deco_w != bw || tl->deco_h != bh || tl->deco_color != color) {
 		struct wlr_buffer *buffer = wlr_allocator_create_buffer(
 			tl->server->allocator, bw, bh, border_format());
 		if (buffer == NULL) {
@@ -274,7 +284,7 @@ void update_toplevel_decoration(struct toplevel *tl) {
 				bw, bh);
 			return;
 		}
-		if (!border_render(tl->server, buffer, bw, bh)) {
+		if (!border_render(tl->server, buffer, bw, bh, color)) {
 			wlr_buffer_drop(buffer);
 			return;
 		}
@@ -283,6 +293,7 @@ void update_toplevel_decoration(struct toplevel *tl) {
 		wlr_buffer_drop(buffer);
 		tl->deco_w = bw;
 		tl->deco_h = bh;
+		tl->deco_color = color;
 	}
 	wlr_scene_node_set_position(&tl->deco_border->node, box.x - CONFIG_BORDER_WIDTH,
 		box.y - CONFIG_BORDER_WIDTH);

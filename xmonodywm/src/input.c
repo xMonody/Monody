@@ -31,6 +31,7 @@ static void client_cursor_surface_destroy(struct wl_listener *listener,
 		void *data) {
 	struct server *server =
 		wl_container_of(listener, server, client_cursor_destroy);
+	wl_list_remove(&server->client_cursor_destroy.link);
 	server->client_cursor_surface = NULL;
 }
 
@@ -222,6 +223,18 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 	struct server *server = kb->server;
 	struct wlr_keyboard_key_event *event = data;
 	uint32_t keycode = event->keycode + 8;
+
+	/* virtual keyboards (wlr_virtual_keyboard_v1 and the IM relay's
+	 * passthrough device) deliver keys with update_state=false: wlroots
+	 * never advances their xkb state, so without this the modifier mask
+	 * stays empty and every Shift/Alt combo shortcut silently dies. The
+	 * wlr_keyboard's modifiers field is recomputed right after this
+	 * listener returns, so the next key already sees the new mask. */
+	if (!event->update_state && kb->keyboard->xkb_state != NULL) {
+		xkb_state_update_key(kb->keyboard->xkb_state, keycode,
+			event->state == WL_KEYBOARD_KEY_STATE_PRESSED
+				? XKB_KEY_DOWN : XKB_KEY_UP);
+	}
 
 	/* keys from the keyboard the IM grabbed are forwarded to it by ime.c
 	 * and must not reach shortcuts or the focused client.  Keys from other

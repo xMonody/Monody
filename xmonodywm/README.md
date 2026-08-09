@@ -173,6 +173,29 @@ Run (from a TTY / with a seat):
 ./build/xmonodywm [-s 'startup command']
 ```
 
+**Autostart** — once the compositor is up (backend started, Wayland socket
+live) it reads the user's startup commands from **`~/.config/mywm/run`**
+(`$XDG_CONFIG_HOME/mywm/run` if set) and launches them one per line through
+`/bin/sh -c`, so `~`, $VARS, quotes and shell syntax all work. **Every line
+is backgrounded automatically** (an explicit trailing `&` is optional and
+handled without double-`&` errors), blank lines and `#` comments are
+skipped (trailing comments too), and each line is logged at startup.
+Every spawned process is **detached the standard way**: `setsid()` puts it
+in its own session without a controlling terminal (no Ctrl+C / SIGHUP from
+the tty, survives the terminal going away), stdin/stdout/stderr are
+redirected to `/dev/null` (no output polluting the compositor's tty, no
+blocking on terminal I/O), and helpers are reaped via SIGCHLD so they never
+pile up as zombies. Typical contents:
+
+```sh
+# output configuration, wallpaper, input method
+wlr-randr --output Virtual-1 --mode 2880x1800 --scale 1.5
+swaybg -i ~/1.jpg -f full
+fcitx5 -d
+```
+
+`-s 'cmd'` still works as a one-off startup command (run after the file).
+
 ## Configuration
 
 Everything tunable lives in **`src/config.h`** (edit and rebuild):
