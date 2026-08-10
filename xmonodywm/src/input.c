@@ -35,6 +35,15 @@ static void client_cursor_surface_destroy(struct wl_listener *listener,
 	server->client_cursor_surface = NULL;
 }
 
+static void client_cursor_shape_client_destroy(struct wl_listener *listener,
+		void *data) {
+	struct server *server = wl_container_of(listener, server,
+		client_cursor_shape_client_destroy);
+	wl_list_remove(&server->client_cursor_shape_client_destroy.link);
+	server->client_cursor_shape = 0;
+	server->client_cursor_shape_client = NULL;
+}
+
 void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server,
 		seat_request_set_cursor);
@@ -63,6 +72,13 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 		if (over_layer) {
 			return;
 		}
+		/* a cursor surface supersedes any previously set cursor shape
+		 * (clients mixing both protocols: the last request wins) */
+		server->client_cursor_shape = 0;
+		if (server->client_cursor_shape_client != NULL) {
+			wl_list_remove(&server->client_cursor_shape_client_destroy.link);
+			server->client_cursor_shape_client = NULL;
+		}
 		/* remember the client's cursor so it can be restored when the
 		 * compositor cursor override (title strip / resize edge) ends */
 		if (server->client_cursor_surface != event->surface) {
@@ -89,6 +105,72 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 				server->cursor_override);
 		}
 	}
+}
+
+void seat_request_set_shape(struct wl_listener *listener, void *data) {
+	struct server *server = wl_container_of(listener, server,
+		cursor_shape_set_shape);
+	struct wlr_cursor_shape_manager_v1_request_set_shape_event *event = data;
+	if (event->device_type !=
+			WLR_CURSOR_SHAPE_MANAGER_V1_DEVICE_TYPE_POINTER) {
+		return; /* no tablet support in this compositor */
+	}
+	if (event->seat_client != server->seat->pointer_state.focused_client) {
+		return;
+	}
+	/* over layer-shell surfaces (e.g. the Qt taskbar) keep the
+	 * compositor's own cursor instead of the client's: it is always
+	 * rendered at the output's (fractional) scale, so it never needs
+	 * rescaling when the pointer crosses output boundaries */
+	struct wlr_surface *focused =
+		server->seat->pointer_state.focused_surface;
+	struct layer_surface *ls;
+	bool over_layer = false;
+	if (focused != NULL) {
+		wl_list_for_each(ls, &server->layer_surfaces, link) {
+			if (ls->scene_layer != NULL &&
+					ls->scene_layer->layer_surface != NULL &&
+					ls->scene_layer->layer_surface->surface == focused) {
+				over_layer = true;
+				break;
+			}
+		}
+	}
+	if (over_layer) {
+		return;
+	}
+	/* remember the shape so pointer.c can restore it when the compositor
+	 * cursor override ends; a shape supersedes an earlier cursor surface
+	 * (mixing protocols: the last request wins).  Track the owning seat
+	 * client so a stale shape is never shown for another client. */
+	if (server->client_cursor_surface != NULL) {
+		wl_list_remove(&server->client_cursor_destroy.link);
+		server->client_cursor_surface = NULL;
+	}
+	if (server->client_cursor_shape_client != event->seat_client) {
+		if (server->client_cursor_shape_client != NULL) {
+			wl_list_remove(&server->client_cursor_shape_client_destroy.link);
+		}
+		server->client_cursor_shape_client_destroy.notify =
+			client_cursor_shape_client_destroy;
+		wl_signal_add(&event->seat_client->events.destroy,
+			&server->client_cursor_shape_client_destroy);
+		server->client_cursor_shape_client = event->seat_client;
+	}
+	server->client_cursor_shape = event->shape;
+	wlr_log(WLR_DEBUG, "cursor: shape %d", event->shape);
+	if (server->cursor_override != NULL) {
+		/* we own the cursor (title zone / resize edge): keep the override,
+		 * just remember the client's preference for later */
+		wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,
+			server->cursor_override);
+		return;
+	}
+	/* render the shape ourselves: the image comes from the compositor's
+	 * xcursor theme at the current output scale, so the cursor size always
+	 * matches the compositor's own cursors - the client never has to guess */
+	wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,
+		wlr_cursor_shape_v1_name(event->shape));
 }
 
 void seat_request_set_selection(struct wl_listener *listener, void *data) {

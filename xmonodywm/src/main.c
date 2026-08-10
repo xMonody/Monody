@@ -178,7 +178,10 @@ static void run_startup_file(void) {
 }
 
 int main(int argc, char *argv[]) {
-	wlr_log_init(WLR_INFO, NULL);
+	/* WLR_DEBUG=1 switches to debug logging (the bundled tests verify cursor
+	 * decisions through the "cursor: ..." WLR_DEBUG lines) */
+	const char *dbg = getenv("WLR_DEBUG");
+	wlr_log_init(dbg != NULL && dbg[0] != '\0' ? WLR_DEBUG : WLR_INFO, NULL);
 	/* never leave spawned helpers as zombies */
 	struct sigaction chld_sa = {0};
 	chld_sa.sa_handler = reap_children;
@@ -278,6 +281,12 @@ int main(int argc, char *argv[]) {
 	struct wlr_virtual_pointer_manager_v1 *virtual_pointer_manager =
 		wlr_virtual_pointer_manager_v1_create(server.display);
 
+	/* cursor-shape-v1: clients pick a shape, the compositor renders it from
+	 * its own xcursor theme at the output's (fractional) scale, so the
+	 * cursor size always matches - no client-side guessing */
+	server.cursor_shape_manager =
+		wlr_cursor_shape_manager_v1_create(server.display, 1);
+
 	/* ---- input method (fcitx5 / ibus) ---- */
 	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_manager =
 		wlr_virtual_keyboard_manager_v1_create(server.display);
@@ -292,38 +301,30 @@ int main(int argc, char *argv[]) {
 	server.new_input.notify = server_new_input;
 	wl_signal_add(&server.backend->events.new_input, &server.new_input);
 	server.new_virtual_pointer.notify = server_new_virtual_pointer;
-	wl_signal_add(&virtual_pointer_manager->events.new_virtual_pointer,
-		&server.new_virtual_pointer);
+	wl_signal_add(&virtual_pointer_manager->events.new_virtual_pointer, &server.new_virtual_pointer);
 	server.new_virtual_keyboard.notify = server_new_virtual_keyboard;
-	wl_signal_add(&virtual_keyboard_manager->events.new_virtual_keyboard,
-		&server.new_virtual_keyboard);
+	wl_signal_add(&virtual_keyboard_manager->events.new_virtual_keyboard, &server.new_virtual_keyboard);
 	server.layout_change.notify = server_layout_change;
 	wl_signal_add(&server.output_layout->events.change, &server.layout_change);
 	server.output_manager_apply.notify = output_manager_apply;
-	wl_signal_add(&server.output_manager->events.apply,
-		&server.output_manager_apply);
+	wl_signal_add(&server.output_manager->events.apply, &server.output_manager_apply);
 	server.output_manager_test.notify = output_manager_test;
-	wl_signal_add(&server.output_manager->events.test,
-		&server.output_manager_test);
+	wl_signal_add(&server.output_manager->events.test, &server.output_manager_test);
 	server.new_xdg_toplevel.notify = server_new_toplevel;
 	wl_signal_add(&xdg_shell->events.new_toplevel, &server.new_xdg_toplevel);
 	server.new_layer_surface.notify = server_new_layer_surface;
 	wl_signal_add(&layer_shell->events.new_surface, &server.new_layer_surface);
 	server.new_decoration.notify = server_new_decoration;
-	wl_signal_add(&decoration_manager->events.new_toplevel_decoration,
-		&server.new_decoration);
+	wl_signal_add(&decoration_manager->events.new_toplevel_decoration, &server.new_decoration);
 	server.new_ime.notify = ime_new_input_method;
-	wl_signal_add(&input_method_manager->events.input_method,
-		&server.new_ime);
+	wl_signal_add(&input_method_manager->events.input_method, &server.new_ime);
 	server.new_text_input.notify = ime_new_text_input;
-	wl_signal_add(&text_input_manager->events.text_input,
-		&server.new_text_input);
+	wl_signal_add(&text_input_manager->events.text_input, &server.new_text_input);
 
 	server.cursor_motion.notify = cursor_motion;
 	wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
 	server.cursor_motion_absolute.notify = cursor_motion_absolute;
-	wl_signal_add(&server.cursor->events.motion_absolute,
-		&server.cursor_motion_absolute);
+	wl_signal_add(&server.cursor->events.motion_absolute, &server.cursor_motion_absolute);
 	server.cursor_button.notify = cursor_button;
 	wl_signal_add(&server.cursor->events.button, &server.cursor_button);
 	server.cursor_axis.notify = cursor_axis;
@@ -332,23 +333,19 @@ int main(int argc, char *argv[]) {
 	wl_signal_add(&server.cursor->events.frame, &server.cursor_frame);
 
 	server.seat_request_set_cursor.notify = seat_request_set_cursor;
-	wl_signal_add(&server.seat->events.request_set_cursor,
-		&server.seat_request_set_cursor);
+	wl_signal_add(&server.seat->events.request_set_cursor, &server.seat_request_set_cursor);
+	server.cursor_shape_set_shape.notify = seat_request_set_shape;
+	wl_signal_add(&server.cursor_shape_manager->events.request_set_shape, &server.cursor_shape_set_shape);
 	server.seat_request_set_selection.notify = seat_request_set_selection;
-	wl_signal_add(&server.seat->events.request_set_selection,
-		&server.seat_request_set_selection);
-	server.seat_request_set_primary_selection.notify =
-		seat_request_set_primary_selection;
-	wl_signal_add(&server.seat->events.request_set_primary_selection,
-		&server.seat_request_set_primary_selection);
+	wl_signal_add(&server.seat->events.request_set_selection, &server.seat_request_set_selection);
+	server.seat_request_set_primary_selection.notify = seat_request_set_primary_selection;
+	wl_signal_add(&server.seat->events.request_set_primary_selection, &server.seat_request_set_primary_selection);
 	server.seat_request_start_drag.notify = seat_request_start_drag;
-	wl_signal_add(&server.seat->events.request_start_drag,
-		&server.seat_request_start_drag);
+	wl_signal_add(&server.seat->events.request_start_drag, &server.seat_request_start_drag);
 	server.seat_start_drag.notify = seat_start_drag;
 	wl_signal_add(&server.seat->events.start_drag, &server.seat_start_drag);
 
-	wlr_seat_set_capabilities(server.seat,
-		WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
+	wlr_seat_set_capabilities(server.seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
 
 	const char *socket = wl_display_add_socket_auto(server.display);
 	if (socket == NULL) {
@@ -410,6 +407,7 @@ int main(int argc, char *argv[]) {
 	wl_list_remove(&server.cursor_axis.link);
 	wl_list_remove(&server.cursor_frame.link);
 	wl_list_remove(&server.seat_request_set_cursor.link);
+	wl_list_remove(&server.cursor_shape_set_shape.link);
 	wl_list_remove(&server.seat_request_set_selection.link);
 	wl_list_remove(&server.seat_request_set_primary_selection.link);
 	wl_list_remove(&server.seat_request_start_drag.link);

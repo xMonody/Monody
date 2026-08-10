@@ -6,10 +6,11 @@
  * through a GLES2 pass that multiplies it by a rounded-rectangle SDF alpha
  * mask.  The result is a buffer with transparent corners which the scene
  * composites like any other buffer; the rounded border ring from border.c
- * then outlines it.  The border ring's inner arc has radius
- * CONFIG_BORDER_RADIUS - CONFIG_BORDER_WIDTH, and the mask clips the
- * content to exactly that radius, so ring and content meet on the same arc
- * with no seam.
+ * then outlines it.  The border ring's inner edge overlaps the content by
+ * CONFIG_BORDER_OVERLAP px (its anti-aliased edge blends onto the content,
+ * so no background seam shows between ring and app); the content arc has
+ * radius CONFIG_BORDER_RADIUS - CONFIG_BORDER_WIDTH, matching the ring's
+ * inner arc.
  *
  * The pass re-runs on every surface commit that carries a buffer, so
  * animations and damage updates stay current.  It uses the same raw-GL-on-

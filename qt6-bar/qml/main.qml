@@ -101,13 +101,14 @@ Window {
                                             : (itemMouse.containsMouse ? "#26ffffff" : "transparent")
                 }
 
-                // app icon from the theme
+                // app icon from the theme (rendered by IconProvider, so
+                // SVG icons survive Qt's weak built-in SVG renderer)
                 Image {
                     id: iconImage
                     width: 24
                     height: 24
                     anchors.centerIn: parent
-                    source: bar.findIcon(model.appId)
+                    source: "image://icons/" + encodeURIComponent(model.appId)
                     sourceSize: Qt.size(64, 64)
                     fillMode: Image.PreserveAspectFit
                     smooth: true

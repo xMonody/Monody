@@ -1,7 +1,5 @@
 #include "DesktopApps.h"
 
-#include "IconFinder.h"
-
 #include <QDir>
 #include <QFileInfo>
 #include <QLocale>
@@ -44,19 +42,25 @@ QString localizedValue(QSettings &s, const QString &key)
 
 // Icon= may be a bare theme name, a name with an extension, or an absolute path.
 // Only strip a REAL image extension: dotted ids like org.wezfurlong.wezterm must pass through.
+// The result is fed to the "icons" image provider (image://icons/<encoded>),
+// which renders SVG icons with librsvg so they do not lose parts.
 QString resolveIcon(const QString &icon)
 {
     if (icon.isEmpty())
         return {};
-    const QString trimmed = icon.trimmed();
-    if (trimmed.startsWith(QLatin1Char('/')))
-        return QUrl::fromLocalFile(trimmed).toString();
-    QString name = trimmed;
-    static const QStringList imageExts = {QStringLiteral("png"), QStringLiteral("svg"),
-                                          QStringLiteral("svgz"), QStringLiteral("xpm")};
-    if (imageExts.contains(QFileInfo(name).suffix().toLower()))
-        name = QFileInfo(name).completeBaseName();
-    return IconFinder::find(name);
+    QString name = icon.trimmed();
+    // Absolute paths are used as-is (no extension stripping, and the
+    // provider must not be fooled into a theme lookup).
+    if (!name.startsWith(QLatin1Char('/'))) {
+        // Only strip a REAL image extension: dotted ids like
+        // org.wezfurlong.wezterm must pass through.
+        static const QStringList imageExts = {QStringLiteral("png"), QStringLiteral("svg"),
+                                              QStringLiteral("svgz"), QStringLiteral("xpm")};
+        if (imageExts.contains(QFileInfo(name).suffix().toLower()))
+            name = QFileInfo(name).completeBaseName();
+    }
+    return QStringLiteral("image://icons/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(name));
 }
 
 } // namespace

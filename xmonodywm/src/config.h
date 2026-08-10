@@ -13,42 +13,43 @@
 
 #include <wlr/types/wlr_keyboard.h>
 
-/* ------------------------------------------------------------------ */
-/* window decorations                                                  */
-/* ------------------------------------------------------------------ */
+#define CONFIG_TITLEBAR_CURSOR "all-scroll" /* cursor shown while hovering the title strip */
+#define CONFIG_BORDER_WIDTH     1.5        /* 边框宽度 */
+#define CONFIG_BORDER_RADIUS    10         /* 边框圆角 (px) */
+#define CONFIG_TITLEBAR_HEIGHT  8          /* 移动窗口边框范围 */
+#define CONFIG_EDGE_THICKNESS   8          /* 调整窗口大小边框范围 */
 
-#define CONFIG_BORDER_WIDTH 2           /* server-side border stroke width (px) */
-#define CONFIG_BORDER_RADIUS 12         /* rounded-corner radius of the border (px) */
-#define CONFIG_BORDER_COLOR 0xFF7C73B0u /* focused border color, 0xAARRGGBB (#7C73B0) */
-#define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u /* unfocused border color (#676E95) */
+#define CONFIG_BORDER_OVERLAP    1.5        /* 控制边框宽度 */
+#define CONFIG_MAXIMIZED_GAP     1          /* 边框和屏幕间距 */
+#define CONFIG_MAXIMIZED_GAP_BAR 1.5        /* 边框和状态栏间距 */
+#define CONFIG_BAR_TOP_OVERLAP  -1.5        /* 窗口顶部相对状态栏的偏移(px) */
 
-/* ------------------------------------------------------------------ */
-/* window interaction                                                  */
-/* ------------------------------------------------------------------ */
+#define CONFIG_BORDER_COLOR 0xFF676E95u  /* 0xFF7C73B0u  活动窗口, 0xAARRGGBB (#7C73B0) */
+#define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u /*  非活动窗口(#676E95) */
 
-#define CONFIG_TITLEBAR_HEIGHT 20         /* invisible title strip at the window top (px) */
-#define CONFIG_EDGE_THICKNESS 20          /* grab zone on window edges/corners for move+resize (px) */
+/* Windows 11 风格的柔和光晕, 只画在**活动**窗口的边框外侧: 从边框外缘
+ * 向外延伸 CONFIG_BORDER_GLOW_SIZE px, 用边框色按 (1-t^2)^2 曲线渐进淡出
+ * (边缘最亮, 越往外越淡, 到边界精确归零); 峰值不透明度为
+ * CONFIG_BORDER_GLOW_ALPHA (0..1, 0.18 = 很淡的一层). 非活动窗口永远
+ * 不绘制光晕. 把大小设为 0 即可完全关闭. */
+#define CONFIG_BORDER_GLOW_SIZE 18        /* 光晕超出边框的宽度 (px) */
+#define CONFIG_BORDER_GLOW_ALPHA 0.18f    /* 光晕在边框边缘处的峰值不透明度 */
+
+#define CONFIG_BORDER_COLOR_MIN 0xFF87BEAAu /* left third: minimize (#87beaa) */
+#define CONFIG_BORDER_COLOR_MAX 0xFFF5A3A3u    /* middle third: maximize/restore (#f5a3a3) */
+#define CONFIG_BORDER_COLOR_CLOSE 0xFFD55F6Fu  /* right third: close (#d55f6f) */
+
 #define CONFIG_DOUBLE_CLICK_NS (400 * 1000000L) /* double-click window (ns) */
-#define CONFIG_DRAG_THRESHOLD 8.0         /* px before a press becomes a drag */
+#define CONFIG_LONG_PRESS_NS (350 * 1000000L) /* holding the strip this long grabs the window (ns) */
+#define CONFIG_DRAG_THRESHOLD 4.0         /* 判断是否移动窗口 */
 
-/* ------------------------------------------------------------------ */
-/* background blur                                                     */
-/* ------------------------------------------------------------------ */
+#define CONFIG_WHEEL_DEBOUNCE_ENABLED false /* 控制是否启用骚鼠标 */
+#define CONFIG_WHEEL_BURST_NS (800 * 1000000L)   /* one continuous scroll: max length = one action (0.8 s) */
+#define CONFIG_WHEEL_TICK_GAP_NS (300 * 1000000L) /* two ticks this far apart = next action (0.3 s) */
 
-/* gaussian blur behind transparent windows (terminal emulators): when
- * true a window whose buffer contains semi-transparent pixels gets a
- * GLSL-blurred backdrop; when false transparent windows just show the
- * sharp scene behind them. */
-#define CONFIG_BLUR_ENABLED true
+#define CONFIG_BLUR_ENABLED true               /* 控制透明窗口是否启用阴影 */
 
-/* ------------------------------------------------------------------ */
-/* keyboard shortcuts                                                  */
-/* ------------------------------------------------------------------ */
-
-/* modifier combos, bitmasks of enum wlr_keyboard_modifier */
 #define CONFIG_MOD_MAIN (WLR_MODIFIER_SHIFT | WLR_MODIFIER_ALT) /* Shift+Alt */
-/* alternative combo for the quit binding: Super+KEY_QUIT (the main combo
- * works for quit as well) */
 #define CONFIG_MOD_QUIT (WLR_MODIFIER_LOGO)
 
 /* keysyms, see /usr/include/xkbcommon/xkbcommon-keysyms.h */

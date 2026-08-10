@@ -6,15 +6,22 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 
 * Floating windows only — no tiling, no tabs.
 * The compositor draws a **rounded border** (`#7C73B0`, 2 px stroke, 12 px
-  corner radius) around undecorated windows; client-side decorated windows keep
-  their native decorations.  The border is rendered on the GPU by a GLES2
+  corner radius) around undecorated windows; its inner edge overlaps the
+  window content by 1 px (`CONFIG_BORDER_OVERLAP`) so the anti-aliased edge
+  blends onto the content and no background seam shows between the ring and
+  the app; client-side decorated windows keep their native decorations.  The border is rendered on the GPU by a GLES2
   fragment shader (a rounded-rect SDF) drawn into a wlroots render-target
-  buffer, so resizing costs no CPU rasterization.  The window content itself
+  buffer, so resizing costs no CPU rasterization.  The **top edge of the
+  border is split into three equal colored segments** (same thin stroke as
+  the other three sides): left `#87beaa` (minimize), middle `#f5a3a3`
+  (maximize/restore), right `#d55f6f` (close).  The window content itself
   is re-rendered through a second GLES2 pass with a rounded-corner alpha mask
   (mask.c) — wlr_scene cannot clip a surface to a rounded rectangle — so the
   content's square corners are cut away instead of poking out of the ring,
   and the ring's inner arc and the content meet on the same arc with no
-  seam.
+  seam.  The **focused window's border gets a Windows-11-style soft glow**
+  (`CONFIG_BORDER_GLOW_SIZE` px of the border color fading out past the
+  ring); inactive windows are never glowed.
 * **Transparent windows get a gaussian-blurred backdrop** (frosted glass).
   When a window commits a buffer that actually contains semi-transparent
   pixels (terminal emulators with a transparent background, e.g. `foot`,
@@ -29,26 +36,59 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
   apps with their own header bars) keep their native controls: the client's own
   title bar moves the window through `xdg_toplevel.move`, its buttons work, its
   edges resize natively, and `request_maximize` / `request_minimize` are honored.
-* **Server-side / undecorated** windows get an *invisible* frame owned by the
-  compositor (the top 20 px of the window and the 20 px strips *around* the
-  left/right/bottom edges and corners are grabbed zones; the cursor style
-  updates as soon as the pointer enters them and reverts as soon as it
-  crosses back into the window):
+* **Server-side / undecorated** windows get a *visible* frame owned by the
+  compositor: a rounded border whose top edge is split into three equal
+  colored segments (`#87beaa` minimize / `#f5a3a3` maximize-restore /
+  `#d55f6f` close) plus grab zones around the left/right/bottom edges and
+  corners; the cursor style updates as soon as the pointer enters them and
+  reverts as soon as it crosses back into the window):
 
-  | pointer position | cursor | gesture (left or right button) | action |
+  | pointer position | cursor | gesture | action |
   |---|---|---|---|
-  | top 20 px          | `move`        | hold + drag              | move the window |
-  | top 20 px          | `move`        | hold + wheel up          | maximize |
-  | top 20 px          | `move`        | hold + wheel down        | minimize |
-  | top 20 px          | `move`        | double click             | close the window |
+  | top 20 px (title strip) | `all-scroll`  | hover                     | hints the strip is draggable |
+  | top 20 px (title strip) | `all-scroll`  | hold (left or right) + drag | move the window |
+  | top 20 px (title strip) | `grabbing`    | long press (~350 ms)      | grab the window, it follows the cursor |
+  | top strip, left third  | `all-scroll` | double click           | minimize the window |
+  | top strip, middle third | `all-scroll` | double click         | toggle maximize / restore |
+  | top strip, right third  | `all-scroll` | double click         | close the window |
+  | anywhere over the window | (client's) | hold right + wheel up    | toggle maximize / restore |
+  | anywhere over the window | (client's) | hold right + wheel down  | toggle minimize / restore |
+  | anywhere over the window | (client's) | hold right, double-click left | toggle maximize / restore |
+  | anywhere over the window | (client's) | hold left, double-click right | close the window |
+  | anywhere over the window | `grabbing`  | hold one button, hold the other | move the window (release restores the cursor) |
   | left/right edge    | `ew-resize`   | hold + drag              | resize horizontally |
   | bottom edge        | `ns-resize`   | hold + drag              | resize vertically |
   | bottom corners     | `nwse/nesw`   | hold + drag              | resize diagonally |
 
   Clicking anywhere on a window focuses and raises it.
+* **Right-hold + wheel is debounced.**  A trackpad flick or a
+  high-resolution wheel delivers many ticks in one burst, so two
+  thresholds coalesce them: one continuous scroll (however fast) counts
+  as a single action for at most `CONFIG_WHEEL_BURST_NS` (800 ms), and
+  two ticks at least `CONFIG_WHEEL_TICK_GAP_NS` (300 ms) apart are the
+  next action — so a flick toggles maximize/restore once, while a slow,
+  deliberate scroll fires per notch.  The burst resets on right-button
+  release (toggle off via `CONFIG_WHEEL_DEBOUNCE_ENABLED`).
 * **Dragging the top strip of a maximized window restores it** to its previous
   position and size, then the drag continues with the cursor gripping the
   restored title bar — same as Windows.
+* **Dragged windows can never slide underneath a status bar.**  While a
+  window is being moved (compositor or `xdg_toplevel.move`), the side facing
+  a layer-shell bar's exclusive zone (top or bottom) is clamped to the work
+  area edge; on bar-less edges the window may still be dragged partially
+  off-screen.
+* **The cursor size is never guessed by applications.**  The compositor
+  implements `cursor-shape-v1`: a client picks a shape (text, pointer, resize
+  handles, ...) and the compositor renders it itself, from its own xcursor
+  theme at the output's exact fractional scale.  On a 1.75x output the
+  compositor's own cursor and the client's cursor are therefore the same
+  36×36 image (24 px × 1.75 = 42 px, snapped to the theme's 36 px image) —
+  previously each toolkit rounded 1.75 to 2 (or used its own size setting)
+  and drew its own bitmap, so the cursor visibly changed size when crossing
+  between client cursors, the compositor's title-strip/resize cursors and
+  layer-shell bars.  Apps that still draw custom cursors via
+  `wl_pointer.set_cursor` keep doing so, but the standard shapes all go
+  through the compositor.
 
 ## Protocols
 
@@ -67,6 +107,7 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 | `zwlr_output_manager_v1` | apply/test + config broadcast |
 | `zwlr_foreign_toplevel_manager_v1` | title/app_id/state + requests |
 | `zwlr_virtual_pointer_manager_v1` | extra, used for input testing |
+| `wp_cursor_shape_manager_v1` | clients pick a cursor shape; the compositor renders it from its own xcursor theme at the output's (fractional) scale, so the size always matches — no client-side guessing |
 | `zwp_input_method_v2` | input method (fcitx5/ibus) — activation, keyboard grab, preedit/commit |
 | `zwp_text_input_v3` | per-window text input — enter/leave, surrounding text, commit string |
 
@@ -133,8 +174,8 @@ of composing Chinese, the compositor is fine — check that:
 
 Every protocol this project speaks lives as an XML description in
 `Protocol/` (the core `wayland.xml` plus the wayland-protocols and wlroots
-protocols — 13 files, including the input-method and text-input protocols
-needed for fcitx5).  At build time CMake runs `wayland-scanner` over each
+protocols — 15 files, including the input-method, text-input and
+cursor-shape protocols).  At build time CMake runs `wayland-scanner` over each
 file and emits three artifacts into `build/protocol/`:
 
 * `<name>-protocol.h`         (server-side header; wlroots' installed headers
@@ -158,6 +199,11 @@ layers (bottom -> top):
 ```
 
 Layer-shell exclusive zones shrink the work area that maximized windows use.
+A maximized window is never flush against the work area: the side facing a
+status bar (exclusive zone at the top or bottom) is flush with it
+(`CONFIG_MAXIMIZED_GAP_BAR` = 0 by default), and the other three sides are
+flush too (`CONFIG_MAXIMIZED_GAP` = 0): a maximized window fills the whole
+work area, its border ring touching the bar / screen edges.
 
 ## Build
 
@@ -208,9 +254,13 @@ Everything tunable lives in **`src/config.h`** (edit and rebuild):
 | option | meaning | default |
 |---|---|---|
 | `CONFIG_BORDER_RADIUS` | rounded-corner radius of the border (px) | `12` |
-| `CONFIG_BORDER_WIDTH` / `CONFIG_BORDER_COLOR` | border stroke / color (`0xAARRGGBB`) | `2` / `#7C73B0` |
+| `CONFIG_BORDER_WIDTH` / `CONFIG_BORDER_OVERLAP` / `CONFIG_BORDER_COLOR` | border stroke / overlap onto content / color (`0xAARRGGBB`) | `2` / `1` / `#7C73B0` |
+| `CONFIG_BORDER_GLOW_SIZE` / `CONFIG_BORDER_GLOW_ALPHA` | Windows-11-style soft halo around the **active** window's border: width beyond the ring (px) / peak opacity at the ring (0..1; 0 = off), fading out progressively | `18` / `0.18` |
+| `CONFIG_BORDER_COLOR_MIN` / `_MAX` / `_CLOSE` | top-border segment colors: left (minimize) / middle (maximize-restore) / right (close) | `#87beaa` / `#f5a3a3` / `#d55f6f` |
 | `CONFIG_EDGE_THICKNESS` | grab zone on window edges/corners for move+resize (px) | `20` |
-| `CONFIG_TITLEBAR_HEIGHT` | invisible title strip at the window top (px) | `20` |
+| `CONFIG_TITLEBAR_HEIGHT` | colored title strip at the window top (px) | `10` |
+| `CONFIG_LONG_PRESS_NS` | holding the strip this long grabs the window for moving (ns) | `350 ms` |
+| `CONFIG_WHEEL_DEBOUNCE_ENABLED` / `CONFIG_WHEEL_BURST_NS` / `CONFIG_WHEEL_TICK_GAP_NS` | right-hold + wheel: coalesce rapid ticks (bool) / one continuous scroll = one action for at most this long / two ticks this far apart = next action | `true` / `800 ms` / `300 ms` |
 | `CONFIG_BLUR_ENABLED` | `true`: GLSL gaussian blur behind transparent windows, `false`: sharp backdrop | `true` |
 | `CONFIG_MOD_MAIN` / `CONFIG_KEY_*` | shortcut modifier combo / keysyms (see below) | `Shift+Alt` |
 
@@ -292,9 +342,19 @@ dependency on a wlroots build tree):
 * `test-client.c` — xdg-shell configure/maximize/minimize/move and
   xdg-decoration mode negotiation.
 * `test-interaction.c` — drives a virtual pointer to exercise the whole
-  gesture set: drag-move, wheel maximize/minimize, double-click close,
-  client-side-decoration pass-through, edge resize, and Windows-style
-  restore-from-maximize.
+  gesture set: drag-move and long-press-move, wheel maximize/minimize,
+  double-click title-strip segments (left = minimize, middle =
+  maximize/restore, right = close), client-side-decoration pass-through,
+  edge resize, Windows-style restore-from-maximize, and the chord gestures
+  (hold right + double-click left to toggle maximize, hold left +
+  double-click right to close, hold the other button to move).
+* `test-cursor.c` — terminal-like client (SSD + I-beam cursor request)
+  driven by a virtual pointer; checks the cursor decisions through the
+  compositor's `WLR_DEBUG` "cursor: ..." log.
+* `test-cursor-shape.c` — cursor-shape-v1 negotiation: binds the
+  cursor-shape global, sets a shape on the pointer and drives the pointer
+  into a window to check the compositor renders it and restores it after an
+  override.
 
 * `test-ime-relay.c` — drives the input method relay end to end: a fake
   app (text-input-v3) plus a fake input method (input-method-v2) verify

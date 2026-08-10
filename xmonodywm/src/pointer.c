@@ -1,9 +1,11 @@
 /*
  * pointer.c - compositor cursor interaction
  *
- * Undecorated windows get an invisible frame owned by the compositor:
- *   - top 20 px          : move / maximize (wheel up) / minimize (wheel
- *                          down) / close (double click) while pressed
+ * Undecorated windows get a frame owned by the compositor:
+ *   - top strip (the 3-colored title border) : long press / drag moves
+ *     the window; double-click a segment minimizes (left), toggles
+ *     maximize/restore (middle) or closes (right); hold right + wheel
+ *     up/down toggles maximize-restore / minimize-restore
  *   - edges / corners    : resize
  * A press in the frame is swallowed by the compositor and never reaches
  * the client; client-side decorated windows keep their native controls.
@@ -14,6 +16,8 @@
 #include <limits.h>
 #include <time.h>
 
+#include <linux/input-event-codes.h>
+
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
@@ -21,7 +25,10 @@
 #include <wlr/util/edges.h>
 #include <wlr/util/log.h>
 
-/* is the cursor over the invisible title strip of an undecorated window? */
+/* is the cursor over the visible title strip of an undecorated window?  The
+ * strip spans the window width: the ring's top overhang plus
+ * CONFIG_TITLEBAR_HEIGHT px of the content, split into three colored
+ * segments (minimize / maximize / close). */
 static bool is_in_titlebar_zone(struct server *server, struct toplevel *tl) {
 	if (tl->decoration_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE) {
 		return false; /* client draws its own title bar, use it natively */
@@ -38,7 +45,34 @@ static bool is_in_titlebar_zone(struct server *server, struct toplevel *tl) {
 	double lx = server->cursor->x;
 	double ly = server->cursor->y;
 	return lx >= box.x && lx < box.x + box.width &&
-		ly >= box.y && ly < box.y + CONFIG_TITLEBAR_HEIGHT;
+		ly >= box.y - CONFIG_BORDER_WIDTH &&
+		ly < box.y + CONFIG_TITLEBAR_HEIGHT;
+}
+
+/* which third of the title strip the press sits over: left third =
+ * minimize, middle third = toggle maximize/restore, right third = close */
+static enum zone_action title_strip_action(struct server *server,
+		struct toplevel *tl) {
+	struct wlr_box box;
+	toplevel_box(tl, &box);
+	if (box.width <= 0) {
+		return ZONE_CLOSE;
+	}
+	double x = server->press_x;
+	double third = box.width / 3.0;
+	if (x < box.x + third) {
+		return ZONE_MINIMIZE;
+	}
+	if (x < box.x + 2.0 * third) {
+		return ZONE_MAXIMIZE;
+	}
+	return ZONE_CLOSE;
+}
+
+static void disarm_zone_timer(struct server *server) {
+	if (server->zone_timer != NULL) {
+		wl_event_source_timer_update(server->zone_timer, 0);
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -73,26 +107,165 @@ void end_move(struct server *server) {
 	server->zone_toplevel = NULL;
 	server->zone_press = false;
 	server->dragged = false;
-	server->close_pending = false;
+	server->zone_action = ZONE_NONE;
+	disarm_zone_timer(server);
+}
+
+/* clamp a dragged window's position so it can never slide underneath a
+ * layer-shell status bar: the work area is the output box shrunk by the
+ * bars' exclusive zones, so an edge of the work area that lies inside the
+ * output box faces a bar.  Only those edges are clamped - on bar-less
+ * edges the window may still be dragged partially off-screen. */
+static void clamp_drag_position(struct server *server, struct toplevel *tl,
+		double *x, double *y) {
+	struct wlr_box box;
+	toplevel_box(tl, &box);
+	if (box.width <= 0 || box.height <= 0) {
+		return;
+	}
+	struct wlr_output *output = toplevel_output(server, tl);
+	if (output == NULL) {
+		return;
+	}
+	struct wlr_box out;
+	wlr_output_layout_get_box(server->output_layout, output, &out);
+	struct wlr_box area;
+	get_work_area(server, output, &area);
+
+	if (area.x > out.x) {           /* bar at the left */
+		if (*x < area.x) {
+			*x = area.x;
+		}
+	}
+	if (area.y > out.y) {           /* bar at the top */
+		/* same limit as restore: the maximized window's top pixel shifted by
+		 * CONFIG_BAR_TOP_OVERLAP, so dragging stops exactly where
+		 * maximize/restore do (CONFIG_BAR_TOP_OVERLAP = -CONFIG_MAXIMIZED_GAP_BAR
+		 * stops the window at the maximized position) */
+		struct wlr_box mbox;
+		maximized_box(server, output, &mbox);
+		double top_limit = mbox.y + CONFIG_BAR_TOP_OVERLAP
+			+ CONFIG_MAXIMIZED_GAP_BAR;
+		if (*y < top_limit) {
+			*y = top_limit;
+		}
+	}
+	if (area.x + area.width < out.x + out.width) { /* bar at the right */
+		if (*x + box.width > area.x + area.width) {
+			*x = area.x + area.width - box.width;
+		}
+	}
+	if (area.y + area.height < out.y + out.height) { /* bar at the bottom */
+		if (*y + box.height > area.y + area.height) {
+			*y = area.y + area.height - box.height;
+		}
+	}
 }
 
 static void move_toplevel_to(struct server *server, double lx, double ly) {
-	if (server->move_toplevel != NULL) {
-		wlr_scene_node_set_position(&server->move_toplevel->scene_tree->node,
-			lx - server->grab_x, ly - server->grab_y);
-		update_toplevel_decoration(server->move_toplevel);
+	struct toplevel *tl = server->move_toplevel;
+	if (tl == NULL) {
+		return;
 	}
+	double nx = lx - server->grab_x;
+	double ny = ly - server->grab_y;
+	/* keep the window out from under a layer-shell status bar (top or
+	 * bottom) while it is being dragged */
+	clamp_drag_position(server, tl, &nx, &ny);
+	wlr_scene_node_set_position(&tl->scene_tree->node, nx, ny);
+	update_toplevel_decoration(tl);
+}
+
+/* turn a press on the title strip into a move grab: the grab anchors at the
+ * original press position; dragging a maximized window restores it first
+ * (Windows behavior) so the drag grips its restored geometry */
+static void begin_zone_drag(struct server *server) {
+	struct toplevel *tl = server->zone_toplevel;
+	if (tl == NULL) {
+		return;
+	}
+	server->dragged = true;
+	server->zone_action = ZONE_NONE; /* the drag cancels any armed double click */
+	double ref_x = server->press_x;
+	double ref_y = server->press_y;
+	if (tl->xdg_toplevel->current.maximized) {
+		/* drag of a maximized window's title bar: restore it to its
+		 * previous geometry and clamp the grab point into the restored
+		 * window, so the cursor grips its title bar and the window
+		 * follows (Windows behavior) */
+		restore_maximized_toplevel(tl);
+		struct wlr_box rb = tl->restore_box;
+		/* restore_maximized_toplevel clamps the restored position into
+		 * the work area, so grip the cursor on the window's actual box,
+		 * not the stale saved one */
+		rb.x = tl->scene_tree->node.x;
+		rb.y = tl->scene_tree->node.y;
+		if (tl->has_restore_box && rb.width > 0) {
+			if (ref_x < rb.x) {
+				ref_x = rb.x;
+			}
+			if (ref_x > rb.x + rb.width - 1) {
+				ref_x = rb.x + rb.width - 1;
+			}
+			if (ref_y < rb.y) {
+				ref_y = rb.y;
+			}
+			if (ref_y > rb.y + rb.height - 1) {
+				ref_y = rb.y + rb.height - 1;
+			}
+		}
+	}
+	begin_move(server, tl, ref_x, ref_y);
+	move_toplevel_to(server, server->cursor->x, server->cursor->y);
+	server->last_was_click = false;
+	disarm_zone_timer(server);
+}
+
+/* the strip was held without moving for CONFIG_LONG_PRESS_NS: grab the
+ * window so it follows the cursor (a long press anywhere on the border
+ * moves the window) */
+static int zone_timer_cb(void *data) {
+	struct server *server = data;
+	if (server->zone_press && server->zone_toplevel != NULL &&
+			!server->dragged && !server->moving && !server->resizing &&
+			!server->chord_active) {
+		bool held = (server->zone_button == BTN_LEFT &&
+			server->left_button_held) ||
+			(server->zone_button == BTN_RIGHT &&
+			server->right_button_held);
+		if (held) {
+			begin_zone_drag(server);
+		}
+	}
+	return 0; /* leave the source armed for the next press */
+}
+
+static void arm_zone_timer(struct server *server) {
+	if (server->zone_timer == NULL) {
+		struct wl_event_loop *loop =
+			wl_display_get_event_loop(server->display);
+		server->zone_timer =
+			wl_event_loop_add_timer(loop, zone_timer_cb, server);
+		if (server->zone_timer == NULL) {
+			return; /* no timer: drag still moves, long press can't grab */
+		}
+	}
+	wl_event_source_timer_update(server->zone_timer,
+		CONFIG_LONG_PRESS_NS / 1000000);
 }
 
 /* ------------------------------------------------------------------ */
 /* edge resize                                                        */
 /* ------------------------------------------------------------------ */
 
-/* which edges of the toplevel the cursor is over (top edge excluded: the
- * top 10 px are the title strip). Only compositor-owned windows (no
- * client-side decoration) resize here; CSD windows handle their own edges.
- * The grab zones live *outside* the window box: the moment the pointer
- * crosses into the window the normal cursor style applies again. */
+/* which edges of the toplevel the cursor is over. Only compositor-owned
+ * windows (no client-side decoration) resize here; CSD windows handle
+ * their own edges.  The top strip itself is the title bar, but its two
+ * corner zones (top-left / top-right) are diagonal resize handles.
+ * Each grab zone straddles its edge: half of CONFIG_EDGE_THICKNESS lies
+ * outside the window box and half inside, so the handles are reachable
+ * both from the desktop and from just inside the window.  A maximized
+ * window is never resized here. */
 static uint32_t toplevel_resize_edges(struct server *server,
 		struct toplevel *tl) {
 	if (tl->minimized || tl->xdg_toplevel->base == NULL ||
@@ -109,22 +282,32 @@ static uint32_t toplevel_resize_edges(struct server *server,
 	double lx = server->cursor->x;
 	double ly = server->cursor->y;
 	uint32_t edges = 0;
-	/* left edge (and bottom-left corner, diagonally): 20 px outside the
-	 * box, spanning the window height plus the corner strip */
-	if (lx >= box.x - CONFIG_EDGE_THICKNESS && lx < box.x &&
-			ly >= box.y && ly <= box.y + box.height + CONFIG_EDGE_THICKNESS) {
+	double zone = CONFIG_EDGE_THICKNESS / 2.0; /* half out, half in */
+	double x0 = box.x - zone;              /* left handle outer edge */
+	double x1 = box.x + box.width + zone;  /* right handle outer edge */
+	double y0 = box.y - zone;              /* top handle outer edge */
+	double y1 = box.y + box.height + zone; /* bottom handle outer edge */
+	bool in_x = lx >= x0 && lx <= x1;
+	bool in_y = ly >= y0 && ly <= y1;
+	bool on_left = lx >= x0 && lx < box.x + zone;
+	bool on_right = lx > box.x + box.width - zone && lx <= x1;
+	bool on_top = ly >= y0 && ly < box.y + zone;
+	bool on_bottom = ly > box.y + box.height - zone && ly <= y1;
+	/* left/right handles run the full height (both corner zones included) */
+	if (on_left && in_y) {
 		edges |= WLR_EDGE_LEFT;
 	}
-	if (lx > box.x + box.width &&
-			lx <= box.x + box.width + CONFIG_EDGE_THICKNESS &&
-			ly >= box.y && ly <= box.y + box.height + CONFIG_EDGE_THICKNESS) {
+	if (on_right && in_y) {
 		edges |= WLR_EDGE_RIGHT;
 	}
-	if (ly > box.y + box.height &&
-			ly <= box.y + box.height + CONFIG_EDGE_THICKNESS &&
-			lx >= box.x - CONFIG_EDGE_THICKNESS &&
-			lx <= box.x + box.width + CONFIG_EDGE_THICKNESS) {
+	/* the bottom handle runs the full width */
+	if (on_bottom && in_x) {
 		edges |= WLR_EDGE_BOTTOM;
+	}
+	/* the top edge itself is the title strip; only its two corner zones
+	 * are diagonal resize handles */
+	if (on_top && (on_left || on_right)) {
+		edges |= WLR_EDGE_TOP;
 	}
 	return edges;
 }
@@ -132,12 +315,13 @@ static uint32_t toplevel_resize_edges(struct server *server,
 static const char *resize_cursor_name(uint32_t edges) {
 	bool left = (edges & WLR_EDGE_LEFT) != 0;
 	bool right = (edges & WLR_EDGE_RIGHT) != 0;
+	bool top = (edges & WLR_EDGE_TOP) != 0;
 	bool bottom = (edges & WLR_EDGE_BOTTOM) != 0;
-	if (left && bottom) {
-		return "nesw-resize";
+	if ((left && top) || (right && bottom)) {
+		return "nwse-resize"; /* top-left / bottom-right corner */
 	}
-	if (right && bottom) {
-		return "nwse-resize";
+	if ((right && top) || (left && bottom)) {
+		return "nesw-resize"; /* top-right / bottom-left corner */
 	}
 	if (left || right) {
 		return "ew-resize";
@@ -154,11 +338,28 @@ static void set_cursor_override(struct server *server, const char *name) {
 	wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager, name);
 }
 
-static void clear_cursor_override(struct server *server) {
-	if (server->cursor_override == NULL) {
+/* show the cursor the focused client currently wants: its compositor-
+ * rendered cursor shape (cursor-shape-v1), its own cursor surface
+ * (wl_pointer.set_cursor), or the default arrow.  A shape wins over a
+ * surface: the compositor always renders it at the correct output scale,
+ * while a client-drawn surface may have been sized by a guessing client
+ * (the 1.75x fractional-scale mismatch this file fixes).  If a compositor
+ * cursor override (title strip / resize edge) is active it wins over
+ * everything else. */
+void reapply_client_cursor(struct server *server) {
+	if (server->cursor_override != NULL) {
+		wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,
+			server->cursor_override);
 		return;
 	}
-	server->cursor_override = NULL;
+	if (server->client_cursor_shape != 0 &&
+			server->client_cursor_shape_client ==
+				server->seat->pointer_state.focused_client) {
+		wlr_log(WLR_DEBUG, "cursor: restore-shape");
+		wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,
+			wlr_cursor_shape_v1_name(server->client_cursor_shape));
+		return;
+	}
 	/* only hand the pointer back to the client when the pointer is still
 	 * over that client's surface (e.g. leaving the resize strip back into
 	 * the window). If the pointer moved out to empty desktop, the stored
@@ -184,10 +385,21 @@ static void clear_cursor_override(struct server *server) {
 	}
 }
 
+static void clear_cursor_override(struct server *server) {
+	if (server->cursor_override == NULL) {
+		return;
+	}
+	server->cursor_override = NULL;
+	reapply_client_cursor(server);
+}
+
 /* the toplevel the cursor interacts with: the window under the cursor, or
  * - when the cursor is outside every window - the one whose resize grab
- * zone (CONFIG_EDGE_THICKNESS px around the box) contains the cursor, so
- * the resize handles stay reachable even though they live outside the box */
+ * zone (CONFIG_EDGE_THICKNESS px straddling the box: half in, half out)
+ * contains the cursor, so the resize handles stay reachable even though
+ * half of them live outside the box.
+ * The title strip's 2 px overhang above the box (the ring's top edge) is
+ * reachable the same way, so the whole colored strip is draggable. */
 static struct toplevel *toplevel_nearby(struct server *server) {
 	struct toplevel *tl = toplevel_at(server);
 	if (tl != NULL && !tl->minimized) {
@@ -195,14 +407,19 @@ static struct toplevel *toplevel_nearby(struct server *server) {
 	}
 	struct toplevel *candidate;
 	wl_list_for_each(candidate, &server->toplevels, link) {
-		if (toplevel_resize_edges(server, candidate) != 0) {
+		if (toplevel_resize_edges(server, candidate) != 0 ||
+				(!candidate->minimized &&
+				 is_in_titlebar_zone(server, candidate))) {
 			return candidate;
 		}
 	}
 	return NULL;
 }
 
-/* decide which compositor-owned cursor to show at the current position */
+/* decide which compositor-owned cursor to show at the current position:
+ * hovering the colored top strip (CONFIG_TITLEBAR_HEIGHT px) shows
+ * CONFIG_TITLEBAR_CURSOR (all-scroll); moving out of the strip restores
+ * the client's cursor through clear_cursor_override() */
 void update_cursor_style(struct server *server) {
 	const char *name = NULL;
 
@@ -213,13 +430,16 @@ void update_cursor_style(struct server *server) {
 	} else {
 		struct toplevel *tl = toplevel_nearby(server);
 		if (tl != NULL) {
-			if (is_in_titlebar_zone(server, tl)) {
-				name = "move";
-			} else {
-				uint32_t edges = toplevel_resize_edges(server, tl);
+			uint32_t edges = toplevel_resize_edges(server, tl);
+			/* the corner resize zones win over the title strip; everywhere
+			 * else the top strip keeps its all-scroll cursor */
+			bool corner = (edges & WLR_EDGE_TOP) != 0;
+			if (corner || !is_in_titlebar_zone(server, tl)) {
 				if (edges != 0) {
 					name = resize_cursor_name(edges);
 				}
+			} else {
+				name = CONFIG_TITLEBAR_CURSOR;
 			}
 		}
 	}
@@ -235,7 +455,8 @@ void update_cursor_style(struct server *server) {
 
 static void begin_resize(struct server *server, struct toplevel *tl,
 		uint32_t edges) {
-	if (server->resizing) {
+	/* never resize a maximized window */
+	if (server->resizing || tl->xdg_toplevel->current.maximized) {
 		return;
 	}
 	server->resizing = true;
@@ -250,8 +471,9 @@ static void begin_resize(struct server *server, struct toplevel *tl,
 
 static void update_resize(struct server *server) {
 	struct toplevel *tl = server->resize_toplevel;
-	if (tl == NULL || tl->xdg_toplevel->base == NULL) {
-		return;
+	if (tl == NULL || tl->xdg_toplevel->base == NULL ||
+			tl->xdg_toplevel->current.maximized) {
+		return; /* never adjust a maximized window */
 	}
 	double dx = server->cursor->x - server->press_x;
 	double dy = server->cursor->y - server->press_y;
@@ -259,17 +481,17 @@ static void update_resize(struct server *server) {
 
 	int nw = orig.width;
 	int nh = orig.height;
-	int nx = orig.x;
-	int ny = orig.y;
 	if ((server->resize_edges & WLR_EDGE_RIGHT) != 0) {
 		nw = orig.width + (int)dx;
 	}
 	if ((server->resize_edges & WLR_EDGE_LEFT) != 0) {
 		nw = orig.width - (int)dx;
-		nx = orig.x + (int)dx;
 	}
 	if ((server->resize_edges & WLR_EDGE_BOTTOM) != 0) {
 		nh = orig.height + (int)dy;
+	}
+	if ((server->resize_edges & WLR_EDGE_TOP) != 0) {
+		nh = orig.height - (int)dy;
 	}
 
 	/* clamp to the client's constraints (or a sane fallback) */
@@ -283,11 +505,9 @@ static void update_resize(struct server *server) {
 		? tl->xdg_toplevel->current.max_height : INT_MAX;
 	if (nw < min_w) {
 		nw = min_w;
-		nx = orig.x + orig.width - nw; /* keep the right edge fixed */
 	}
 	if (nw > max_w) {
 		nw = max_w;
-		nx = orig.x + orig.width - nw;
 	}
 	if (nh < min_h) {
 		nh = min_h;
@@ -296,7 +516,11 @@ static void update_resize(struct server *server) {
 		nh = max_h;
 	}
 
-	wlr_scene_node_set_position(&tl->scene_tree->node, nx, ny);
+	/* the scene node is never moved here: a top/left grab repositions it
+	 * in xdg_toplevel_commit() once the client commits the new geometry
+	 * (moving it first would render the old, still-larger buffer at the
+	 * moved position and make the opposite edge bounce); a bottom/right
+	 * grab needs no move since the top-left corner stays fixed. */
 	wlr_xdg_toplevel_set_size(tl->xdg_toplevel, nw, nh);
 	update_toplevel_decoration(tl);
 }
@@ -313,6 +537,249 @@ void end_resize(struct server *server) {
 	server->resizing = false;
 	server->resize_toplevel = NULL;
 	server->resize_edges = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* chord gestures                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Hold one mouse button, then press the other:
+ *   right held + double-click left -> toggle maximize / restore
+ *   left held + double-click right -> close the window
+ *   hold the other button          -> move the window under the cursor
+ *                                    (cursor turns "grabbing"; releasing
+ *                                    restores the previous cursor style) */
+
+/* start moving the chord's window with the cursor; the grab anchors at the
+ * trigger button's press point (server->press_x/press_y), so the whole drag
+ * distance is honored; a maximized window is restored first so the drag
+ * grips its restored geometry (Windows behavior, same as the title-strip
+ * drag) */
+static void begin_chord_move(struct server *server) {
+	struct toplevel *tl = server->chord_toplevel;
+	if (tl == NULL || server->moving || server->resizing) {
+		return;
+	}
+	double ref_x = server->press_x;
+	double ref_y = server->press_y;
+	if (tl->xdg_toplevel->current.maximized) {
+		restore_maximized_toplevel(tl);
+		struct wlr_box rb = tl->restore_box;
+		/* restore_maximized_toplevel clamps the restored position into the
+		 * work area, so grip the cursor on the window's actual box */
+		rb.x = tl->scene_tree->node.x;
+		rb.y = tl->scene_tree->node.y;
+		if (tl->has_restore_box && rb.width > 0) {
+			if (ref_x < rb.x) {
+				ref_x = rb.x;
+			}
+			if (ref_x > rb.x + rb.width - 1) {
+				ref_x = rb.x + rb.width - 1;
+			}
+			if (ref_y < rb.y) {
+				ref_y = rb.y;
+			}
+			if (ref_y > rb.y + rb.height - 1) {
+				ref_y = rb.y + rb.height - 1;
+			}
+		}
+	}
+	focus_toplevel(server, tl);
+	begin_move(server, tl, ref_x, ref_y);
+	move_toplevel_to(server, server->cursor->x, server->cursor->y);
+	server->chord_moving = true;
+	update_cursor_style(server); /* "grabbing" */
+}
+
+static void disarm_chord_timer(struct server *server) {
+	if (server->chord_timer != NULL) {
+		wl_event_source_timer_update(server->chord_timer, 0);
+	}
+}
+
+/* the disambiguation timer fired while the trigger button is still held:
+ * it is a hold, not the first click of a double-click -> move the window */
+static int chord_timer_cb(void *data) {
+	struct server *server = data;
+	if (server->chord_active && server->chord_pending &&
+			!server->chord_moving && server->chord_toplevel != NULL &&
+			!server->moving && !server->resizing) {
+		bool held = (server->chord_button == BTN_LEFT &&
+			server->left_button_held) ||
+			(server->chord_button == BTN_RIGHT &&
+			server->right_button_held);
+		if (held) {
+			server->chord_pending = false;
+			begin_chord_move(server);
+		}
+	}
+	return 0; /* leave the source armed for the next chord */
+}
+
+static void arm_chord_timer(struct server *server) {
+	if (server->chord_timer == NULL) {
+		struct wl_event_loop *loop =
+			wl_display_get_event_loop(server->display);
+		server->chord_timer =
+			wl_event_loop_add_timer(loop, chord_timer_cb, server);
+		if (server->chord_timer == NULL) {
+			return; /* no timer: double-click still works, hold can't move */
+		}
+	}
+	wl_event_source_timer_update(server->chord_timer,
+		CONFIG_DOUBLE_CLICK_NS / 1000000);
+}
+
+/* fully end a chord gesture and every grab it started */
+static void end_chord(struct server *server) {
+	disarm_chord_timer(server);
+	disarm_zone_timer(server);
+	server->moving = false;
+	server->move_toplevel = NULL;
+	server->zone_toplevel = NULL;
+	server->zone_press = false;
+	server->dragged = false;
+	server->zone_action = ZONE_NONE;
+	server->chord_active = false;
+	server->chord_pending = false;
+	server->chord_moving = false;
+}
+
+/* the double-click action depends on which button is held:
+ * right held + double-click left -> toggle maximize / restore
+ * left held + double-click right -> close the window */
+static void chord_double_click(struct server *server, uint32_t chord_button) {
+	struct toplevel *tl = server->chord_toplevel;
+	if (tl == NULL) {
+		return;
+	}
+	if (chord_button == BTN_LEFT) {
+		/* the held button is the right one */
+		focus_toplevel(server, tl);
+		if (tl->xdg_toplevel->current.maximized) {
+			restore_maximized_toplevel(tl);
+		} else {
+			set_maximized(server, tl, true);
+		}
+	} else {
+		/* the held button is the left one */
+		close_toplevel(tl);
+	}
+}
+
+/* the other button was pressed while one is held: remember which presses
+ * the compositor consumed (so their releases are swallowed too) and tell a
+ * double-click (toggle maximize) from a hold (move) */
+static void begin_chord(struct server *server, uint32_t button) {
+	struct toplevel *tl = toplevel_at(server);
+	server->chord_active = true;
+	server->chord_button = button;
+	server->chord_toplevel = tl;
+	server->chord_pending = false;
+	server->chord_moving = false;
+
+	/* the trigger button's press is swallowed by the compositor */
+	server->press_x = server->cursor->x;
+	server->press_y = server->cursor->y;
+	if (button == BTN_LEFT) {
+		server->chord_swallow_left = true;
+	} else {
+		server->chord_swallow_right = true;
+	}
+	/* if the held button's press was swallowed as a zone press, its
+	 * release must be swallowed as well */
+	if (server->zone_press) {
+		if (button == BTN_LEFT) {
+			server->chord_swallow_right = true;
+		} else {
+			server->chord_swallow_left = true;
+		}
+	}
+
+	if (is_double_click(server, button)) {
+		/* double-clicked the other button: the action depends on which
+		 * button is held (right held -> maximize toggle, left held ->
+		 * close) */
+		server->last_was_click = false; /* consumed by the double click */
+		server->chord_active = false;
+		chord_double_click(server, button);
+		return;
+	}
+
+	/* first press: it may become a double-click (maximize) or a hold
+	 * (move); the timer disambiguates */
+	server->chord_pending = true;
+	arm_chord_timer(server);
+}
+
+/* button events while a chord is active: the trigger button decides
+ * double-click vs hold; releasing either button ends the gesture */
+static void process_chord_button(struct server *server, uint32_t time_msec,
+		uint32_t button, enum wl_pointer_button_state state) {
+	if (button != BTN_LEFT && button != BTN_RIGHT) {
+		return; /* other buttons don't participate in the chord */
+	}
+
+	if (button == server->chord_button) {
+		if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+			/* this press is consumed by the chord: swallow its release
+			 * too (even when the chord ends right here) */
+			if (button == BTN_LEFT) {
+				server->chord_swallow_left = true;
+			} else {
+				server->chord_swallow_right = true;
+			}
+			/* second press within the double-click window: the user
+			 * double-clicked the other button -> maximize (right held)
+			 * or close (left held) */
+			if (is_double_click(server, button)) {
+				server->last_was_click = false; /* consumed */
+				end_chord(server);
+				chord_double_click(server, button);
+			}
+			return;
+		}
+		/* release of the trigger button */
+		if (server->chord_pending) {
+			/* it was a click, not a hold: remember it so a quick second
+			 * press is recognized as a double-click */
+			disarm_chord_timer(server);
+			clock_gettime(CLOCK_MONOTONIC, &server->last_release_time);
+			server->last_was_click = true;
+			server->last_click_button = button;
+			server->chord_pending = false;
+		} else if (server->chord_moving) {
+			/* release ends the move and restores the cursor style */
+			end_chord(server);
+			update_cursor_style(server);
+		} else {
+			end_chord(server);
+		}
+		if (button == BTN_LEFT) {
+			server->chord_swallow_left = false;
+		} else {
+			server->chord_swallow_right = false;
+		}
+		return;
+	}
+
+	/* the held button was released: end the chord; forward its release
+	 * only if its press reached the client (otherwise it was a swallowed
+	 * zone press and the release must stay swallowed) */
+	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		bool zone = server->zone_press;
+		end_chord(server);
+		if (!zone) {
+			wlr_seat_pointer_notify_button(server->seat, time_msec,
+				button, state);
+			wlr_seat_pointer_notify_frame(server->seat);
+		}
+		if (button == BTN_LEFT) {
+			server->chord_swallow_left = false;
+		} else {
+			server->chord_swallow_right = false;
+		}
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -340,47 +807,28 @@ static void process_cursor_motion(struct server *server, uint32_t time_msec) {
 		return;
 	}
 
-	if (server->zone_press && server->zone_toplevel != NULL) {
+	/* a chord's trigger is held and the cursor moves: start the move right
+	 * away instead of waiting for the disambiguation timer (a quick release
+	 * without motion stays a click, so double-clicks still work) */
+	if (server->chord_active && server->chord_pending &&
+			!server->chord_moving && !server->moving) {
+		double dx = server->cursor->x - server->press_x;
+		double dy = server->cursor->y - server->press_y;
+		if (dx * dx + dy * dy > CONFIG_DRAG_THRESHOLD * CONFIG_DRAG_THRESHOLD) {
+			server->chord_pending = false;
+			begin_chord_move(server);
+			return; /* this motion started the move; don't forward it */
+		}
+	}
+
+	if (server->zone_press && server->zone_toplevel != NULL &&
+			!server->chord_active) {
 		if (!server->dragged) {
 			double dx = server->cursor->x - server->press_x;
 			double dy = server->cursor->y - server->press_y;
 			if (dx * dx + dy * dy > CONFIG_DRAG_THRESHOLD * CONFIG_DRAG_THRESHOLD) {
-				server->dragged = true;
-				server->close_pending = false;
-				struct toplevel *tl = server->zone_toplevel;
-				/* anchor the grab at the original press position */
-				double ref_x = server->press_x;
-				double ref_y = server->press_y;
-				if (tl->xdg_toplevel->current.maximized) {
-					/* drag of a maximized window's title bar: restore it to
-					 * its previous geometry and clamp the grab point into the
-					 * restored window, so the cursor grips its title bar and
-					 * the window follows (Windows behavior) */
-					restore_maximized_toplevel(tl);
-					struct wlr_box rb = tl->restore_box;
-					/* restore_maximized_toplevel clamps the restored
-					 * position into the work area, so grip the cursor on the
-					 * window's actual box, not the stale saved one */
-					rb.x = tl->scene_tree->node.x;
-					rb.y = tl->scene_tree->node.y;
-					if (tl->has_restore_box && rb.width > 0) {
-						if (ref_x < rb.x) {
-							ref_x = rb.x;
-						}
-						if (ref_x > rb.x + rb.width - 1) {
-							ref_x = rb.x + rb.width - 1;
-						}
-						if (ref_y < rb.y) {
-							ref_y = rb.y;
-						}
-						if (ref_y > rb.y + rb.height - 1) {
-							ref_y = rb.y + rb.height - 1;
-						}
-					}
-				}
-				begin_move(server, tl, ref_x, ref_y);
-				move_toplevel_to(server, server->cursor->x,
-					server->cursor->y);
+				/* a press on the title strip that moves becomes a move grab */
+				begin_zone_drag(server);
 			}
 		} else if (server->moving) {
 			move_toplevel_to(server, server->cursor->x, server->cursor->y);
@@ -437,6 +885,58 @@ static void process_cursor_motion(struct server *server, uint32_t time_msec) {
 
 static void process_cursor_button(struct server *server, uint32_t time_msec,
 		uint32_t button, enum wl_pointer_button_state state) {
+	/* remember whether each button is held: the wheel gestures (scroll up =
+	 * maximize, scroll down = minimize) key off the right button, and the
+	 * chord gestures key off both */
+	if (button == BTN_LEFT) {
+		server->left_button_held =
+			state == WL_POINTER_BUTTON_STATE_PRESSED;
+	}
+	if (button == BTN_RIGHT) {
+		server->right_button_held =
+			state == WL_POINTER_BUTTON_STATE_PRESSED;
+		if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
+			/* a fresh press starts a fresh scroll burst */
+			server->wheel_burst_start.tv_sec = 0;
+			server->wheel_burst_start.tv_nsec = 0;
+			server->wheel_last_tick.tv_sec = 0;
+			server->wheel_last_tick.tv_nsec = 0;
+		}
+	}
+
+	if (server->chord_active) {
+		process_chord_button(server, time_msec, button, state);
+		return;
+	}
+
+	/* start a chord: one button is held and the other one is pressed.
+	 * Gated on CONFIG_WHEEL_DEBOUNCE_ENABLED: with the gestures master
+	 * switch off, chords never start and both presses fall through to
+	 * the client as ordinary clicks. */
+	if (CONFIG_WHEEL_DEBOUNCE_ENABLED &&
+			state == WL_POINTER_BUTTON_STATE_PRESSED &&
+			!server->resizing && !server->moving &&
+			((button == BTN_LEFT && server->right_button_held) ||
+			 (button == BTN_RIGHT && server->left_button_held))) {
+		begin_chord(server, button);
+		return;
+	}
+
+	/* a chord consumed this button's press but ended earlier (e.g. the held
+	 * button was released first): swallow the release so the client never
+	 * sees an orphan release without a matching press */
+	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		if ((button == BTN_LEFT && server->chord_swallow_left) ||
+				(button == BTN_RIGHT && server->chord_swallow_right)) {
+			if (button == BTN_LEFT) {
+				server->chord_swallow_left = false;
+			} else {
+				server->chord_swallow_right = false;
+			}
+			return;
+		}
+	}
+
 	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
 		if (server->resizing) {
 			end_resize(server);
@@ -463,9 +963,29 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 			struct toplevel *tl = server->zone_toplevel;
 			server->zone_press = false;
 			server->zone_toplevel = NULL;
+			disarm_zone_timer(server);
 			if (!server->dragged) {
-				if (server->close_pending && tl != NULL) {
-					close_toplevel(tl);
+				if (server->zone_action != ZONE_NONE && tl != NULL) {
+					/* the second click of a double click on the title strip:
+					 * the segment under the cursor decides the action */
+					switch (server->zone_action) {
+					case ZONE_MINIMIZE:
+						set_minimized(server, tl, true);
+						break;
+					case ZONE_MAXIMIZE:
+						focus_toplevel(server, tl);
+						if (tl->xdg_toplevel->current.maximized) {
+							restore_maximized_toplevel(tl);
+						} else {
+							set_maximized(server, tl, true);
+						}
+						break;
+					case ZONE_CLOSE:
+						close_toplevel(tl);
+						break;
+					default:
+						break;
+					}
 				} else {
 					clock_gettime(CLOCK_MONOTONIC,
 						&server->last_release_time);
@@ -476,7 +996,7 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 				server->last_was_click = false;
 			}
 			server->dragged = false;
-			server->close_pending = false;
+			server->zone_action = ZONE_NONE;
 			update_cursor_style(server);
 			return;
 		}
@@ -490,44 +1010,131 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 	}
 
 	struct toplevel *tl = toplevel_nearby(server);
+	if (tl != NULL && !tl->minimized) {
+		uint32_t edges = toplevel_resize_edges(server, tl);
+		/* the corner resize zones win over the title strip; everywhere
+		 * else the top strip stays the title bar */
+		if (edges != 0 &&
+				((edges & WLR_EDGE_TOP) != 0 ||
+				 !is_in_titlebar_zone(server, tl))) {
+			begin_resize(server, tl, edges);
+			return;
+		}
+	}
 	if (tl != NULL && !tl->minimized && is_in_titlebar_zone(server, tl)) {
-		/* take over: the top 10 px are our invisible title bar */
+		/* take over: the colored top strip is our visible title bar */
 		focus_toplevel(server, tl);
 		server->zone_press = true;
 		server->zone_toplevel = tl;
+		server->zone_button = button;
 		server->press_x = server->cursor->x;
 		server->press_y = server->cursor->y;
 		server->dragged = false;
-		server->close_pending = is_double_click(server, button);
-		if (server->close_pending) {
+		if (is_double_click(server, button)) {
+			/* second click of a double click: arm the action for the
+			 * segment under the cursor (release triggers it) */
 			server->last_was_click = false; /* consumed by the double click */
+			server->zone_action = title_strip_action(server, tl);
+		} else {
+			server->zone_action = ZONE_NONE;
+			/* a quick release stays a click (two clicks = double click);
+			 * holding still past CONFIG_LONG_PRESS_NS grabs the window for
+			 * moving - the timer disambiguates */
+			arm_zone_timer(server);
 		}
 		return;
 	}
 
 	if (tl != NULL && !tl->minimized) {
-		uint32_t edges = toplevel_resize_edges(server, tl);
-		if (edges != 0) {
-			/* take over: the left/right/bottom edge is a resize handle */
-			begin_resize(server, tl, edges);
-			return;
-		}
 		focus_toplevel(server, tl);
 	}
 	wlr_seat_pointer_notify_button(server->seat, time_msec, button, state);
 }
 
+/* right-hold + wheel gestures (wheel up toggles maximize/restore, wheel
+ * down minimizes): a trackpad flick or a high-resolution wheel delivers
+ * many ticks in one burst, which would toggle the state several times.
+ * Two thresholds decide whether a tick is the same gesture or the next
+ * action (only reached when CONFIG_WHEEL_DEBOUNCE_ENABLED is true - the
+ * caller gates the whole gesture on the master switch):
+ *   - CONFIG_WHEEL_BURST_NS: one continuous scroll (however fast) counts
+ *     as one action for at most this long; ticks past the burst start +
+ *     this are a new action.
+ *   - CONFIG_WHEEL_TICK_GAP_NS: two ticks at least this far apart are the
+ *     next action, even inside the burst window. */
+static bool wheel_action_allowed(struct server *server) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	int64_t gap = (now.tv_sec - server->wheel_last_tick.tv_sec) * 1000000000L
+		+ (now.tv_nsec - server->wheel_last_tick.tv_nsec);
+	int64_t dur = (now.tv_sec - server->wheel_burst_start.tv_sec) * 1000000000L
+		+ (now.tv_nsec - server->wheel_burst_start.tv_nsec);
+	server->wheel_last_tick = now;
+	if (gap >= 0 && gap < CONFIG_WHEEL_TICK_GAP_NS &&
+			dur >= 0 && dur <= CONFIG_WHEEL_BURST_NS) {
+		return false; /* same gesture: tick came fast and the burst is
+		                * still within its max length */
+	}
+	/* a new gesture: either the previous tick was too long ago (gap) or
+	 * the burst outlived its max length (duration) */
+	server->wheel_burst_start = now;
+	return true;
+}
+
+/* the toplevel the wheel gesture acts on: the window under the cursor, or
+ * - when the cursor is over the spot of a minimized (hidden) window - that
+ * window, so scrolling down can restore it */
+static struct toplevel *toplevel_at_or_minimized(struct server *server) {
+	struct toplevel *tl = toplevel_at(server);
+	if (tl != NULL && !tl->minimized) {
+		return tl;
+	}
+	struct toplevel *candidate;
+	wl_list_for_each(candidate, &server->toplevels, link) {
+		if (candidate->minimized && candidate->xdg_toplevel->base != NULL &&
+				candidate->xdg_toplevel->base->surface->mapped) {
+			struct wlr_box box;
+			toplevel_box(candidate, &box);
+			if (server->cursor->x >= box.x &&
+					server->cursor->x < box.x + box.width &&
+					server->cursor->y >= box.y &&
+					server->cursor->y < box.y + box.height) {
+				return candidate;
+			}
+		}
+	}
+	return NULL;
+}
+
 static void process_cursor_axis(struct server *server, uint32_t time_msec,
 		struct wlr_pointer_axis_event *event) {
-	struct toplevel *tl = toplevel_at(server);
-	if (tl != NULL && !tl->minimized && server->zone_press &&
+	struct toplevel *tl = toplevel_at_or_minimized(server);
+	/* gated on the gestures master switch: with CONFIG_WHEEL_DEBOUNCE_
+	 * ENABLED false the wheel does not grab the scroll - it is forwarded
+	 * to the client below like any ordinary scroll */
+	if (CONFIG_WHEEL_DEBOUNCE_ENABLED && tl != NULL &&
+			server->right_button_held &&
 			event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL &&
-			event->delta_discrete != 0 &&
-			is_in_titlebar_zone(server, tl)) {
-		/* while holding a button over the top 10 px:
-		 * wheel up = maximize, wheel down = minimize */
-		if (event->delta_discrete > 0) {
-			set_maximized(server, tl, true);
+			event->delta_discrete != 0) {
+		/* while holding the right mouse button over a window:
+		 * wheel up (negative axis value) toggles maximize / restore,
+		 * wheel down (positive axis value) toggles minimize / restore.
+		 * Two thresholds coalesce rapid ticks: one continuous scroll is
+		 * one action for at most CONFIG_WHEEL_BURST_NS, and two ticks at
+		 * least CONFIG_WHEEL_TICK_GAP_NS apart are the next action. */
+		if (!wheel_action_allowed(server)) {
+			return; /* swallowed: still inside the same gesture */
+		}
+		if (event->delta_discrete < 0) {
+			if (tl->xdg_toplevel->current.maximized) {
+				/* already maximized: restore the saved geometry */
+				restore_maximized_toplevel(tl);
+			} else {
+				set_maximized(server, tl, true);
+			}
+		} else if (tl->minimized) {
+			/* already minimized: restore (show) the window */
+			set_minimized(server, tl, false);
 		} else {
 			set_minimized(server, tl, true);
 		}

@@ -56,6 +56,8 @@ set(PROTOCOLS
 	virtual-keyboard-unstable-v1
 	input-method-unstable-v2
 	text-input-unstable-v3
+	cursor-shape-v1
+	tablet-unstable-v2
 )
 
 set(PROTOCOL_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/protocol)
@@ -123,9 +125,12 @@ add_library(protocol_stubs STATIC
 	${virtual-keyboard-unstable-v1_CODE}
 	${input-method-unstable-v2_CODE}
 	${text-input-unstable-v3_CODE}
+	${cursor-shape-v1_CODE}
+	${tablet-unstable-v2_CODE}
 )
 target_include_directories(protocol_stubs PUBLIC ${PROTOCOL_GEN_DIR})
 target_link_libraries(protocol_stubs PUBLIC PkgConfig::WAYLAND_CLIENT)
+
 
 add_executable(xmonodywm ${COMPOSITOR_SOURCES})
 target_include_directories(xmonodywm PRIVATE
@@ -159,6 +164,13 @@ add_executable(test-cursor test-cursor.c)
 target_include_directories(test-cursor PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-cursor PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
 
+# cursor-shape-v1 negotiation test: binds the cursor-shape global, sets a
+# shape on the pointer and drives a virtual pointer into a window to check
+# the compositor renders it and restores it after an override
+add_executable(test-cursor-shape test-cursor-shape.c)
+target_include_directories(test-cursor-shape PRIVATE ${PROTOCOL_GEN_DIR})
+target_link_libraries(test-cursor-shape PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
+
 # border test: two toplevels + focus switches (repaint focused/unfocused
 # border colors); smoke test for the GLES2 border re-render path
 add_executable(test-border test-border.c)
@@ -190,6 +202,7 @@ add_dependencies(protocol_stubs protocols)
 add_dependencies(test-client protocols)
 add_dependencies(test-interaction protocols)
 add_dependencies(test-cursor protocols)
+add_dependencies(test-cursor-shape protocols)
 add_dependencies(test-border protocols)
 add_dependencies(test-quit protocols)
 add_dependencies(test-ime-relay protocols)

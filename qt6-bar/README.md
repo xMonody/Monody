@@ -54,8 +54,19 @@ For a given `app_id` the bar searches, in order:
    - every other theme, same layout
 2. `/usr/share/pixmaps/<app_id>.*` and `$XDG_DATA_HOME/pixmaps/<app_id>.*`
 
-Common spelling variants are tried too (lowercase, `-` → `_`).
+Common spelling variants are tried too (lowercase, `-` → `_`). If the app_id
+still matches nothing, the bar falls back to the `.desktop` files: an app_id
+that equals a desktop file's basename, `StartupWMClass` or `Name` uses that
+file's `Icon=` value (so e.g. Qt Creator's app_id `qtcreator` finds its icon
+stored as `QtProject-qtcreator.png`).
 If nothing is found a colored tile with the app's initial is drawn instead.
+
+Icons are served to QML through an `image://icons/...` image provider
+(`IconProvider`). SVG files are rendered with **librsvg via gdk-pixbuf**
+(loaded at runtime, with Qt's own SVG renderer as fallback), because Qt's
+built-in SVG renderer silently drops parts of many real-world SVGs
+(Inkscape gradient references, filters, clip paths, ...) - e.g. the Alacritty
+logo lost its bright gradient parts and looked broken on the taskbar.
 
 The socket reconnects automatically every second if the compositor restarts.
 A small dot in the bottom-right corner is green when connected, red otherwise.
@@ -112,6 +123,8 @@ in the terminal.
 ```
 src/main.cpp            layer-shell setup (top layer, anchors, exclusive zone)
 src/BarController.cpp   socket client, window model, icon lookup
+src/IconFinder.cpp      XDG icon-theme lookup (returns file:// URLs)
+src/IconProvider.cpp    image://icons provider; SVG rendering via gdk-pixbuf
 qml/main.qml            taskbar UI (Win11 style)
 3rdparty/LayerShellQt   vendored public headers of layer-shell-qt
 scripts/mock_compositor.py

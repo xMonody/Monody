@@ -21,6 +21,7 @@
 #include <wayland-server-protocol.h>
 
 #include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_input_method_v2.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
@@ -122,6 +123,7 @@ struct toplevel {
 	struct wlr_scene_buffer *deco_border;
 	int deco_w, deco_h;               /* border buffer size */
 	uint32_t deco_color;              /* border color the buffer was rendered with */
+	bool deco_focused;                /* whether the buffer was rendered with the focus glow */
 
 	/* rounded-corner masked content: the client's buffer re-rendered through
 	 * an alpha mask (mask.c) into `masked`; the xdg surface's own scene
@@ -210,6 +212,15 @@ struct layer_surface {
 	struct wl_listener commit;
 };
 
+/* double-click action armed by a press on the top title strip: the action
+ * fires when the (second) click is released without a drag */
+enum zone_action {
+	ZONE_NONE = 0,     /* no armed action */
+	ZONE_MINIMIZE,     /* left third of the strip: minimize */
+	ZONE_MAXIMIZE,     /* middle third: toggle maximize / restore */
+	ZONE_CLOSE,        /* right third: close the window */
+};
+
 struct server {
 	struct wl_display *display;
 	struct wlr_backend *backend;
@@ -226,6 +237,13 @@ struct server {
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *xcursor_manager;
 	struct wl_list keyboards; /* struct keyboard.link (per attached device) */
+
+	/* cursor-shape-v1: lets clients pick a cursor shape which the compositor
+	 * renders with its own theme (so the size always matches the output
+	 * scale, no client-side guessing); handled like wl_pointer.set_cursor */
+	struct wlr_cursor_shape_manager_v1 *cursor_shape_manager;
+	struct wl_listener cursor_shape_set_shape;
+
 
 	struct wl_list toplevels;      /* struct toplevel.link */
 	struct wl_list layer_surfaces; /* struct layer_surface.link */
@@ -252,14 +270,40 @@ struct server {
 
 	/* pointer interaction state */
 	struct toplevel *zone_toplevel; /* toplevel under an active zone press */
-	bool zone_press;                /* press in the top-10px zone, swallowed */
+	bool zone_press;                /* press in the title strip zone, swallowed */
+	bool right_button_held;         /* right mouse button currently pressed */
+	bool left_button_held;          /* left mouse button currently pressed */
+	/* chord gestures: hold one button, then press the other (double-click
+	 * the other = toggle maximize/restore, hold the other = move the window
+	 * under the cursor; releasing restores the cursor style) */
+	bool chord_active;               /* a chord gesture is in progress */
+	uint32_t chord_button;           /* the button pressed second (trigger) */
+	bool chord_pending;              /* first trigger press: disambiguating
+	                                    double-click vs hold */
+	bool chord_moving;               /* the hold turned into a window move */
+	struct toplevel *chord_toplevel; /* window the chord acts on */
+	bool chord_swallow_left;         /* left press was consumed by a chord:
+	                                    swallow its release too */
+	bool chord_swallow_right;        /* same for right */
+	struct wl_event_source *chord_timer; /* double-click vs hold timer */
 	bool moving;                    /* a window move is in progress */
 	struct toplevel *move_toplevel;
 	double grab_x, grab_y; /* cursor offset from the window origin */
 	double press_x, press_y;
 	bool dragged;       /* moved beyond CONFIG_DRAG_THRESHOLD during a press */
-	bool close_pending; /* second click of a double click is armed */
+	enum zone_action zone_action; /* armed double-click action on the title
+	                                strip, executed on release; ZONE_NONE when
+	                                no double-click is in progress */
+	struct wl_event_source *zone_timer; /* holding the title strip this long
+	                                       grabs the window for moving */
+	uint32_t zone_button;         /* the button held in the title strip zone */
 	struct timespec last_release_time;
+	struct timespec wheel_burst_start; /* first tick of the current wheel
+	                                      burst: ticks inside the burst
+	                                      window count as one action */
+	struct timespec wheel_last_tick;   /* time of the previous wheel tick:
+	                                      two ticks CONFIG_WHEEL_TICK_GAP_NS
+	                                      apart start a new action */
 	bool last_was_click;
 	uint32_t last_click_button;
 
@@ -273,11 +317,21 @@ struct server {
 	 * is shown (used to avoid redundant updates) */
 	const char *cursor_override;
 
-	/* last cursor image the focused client set (wl_pointer.set_cursor);
-	 * restored by pointer.c when the compositor cursor override ends so
-	 * the cursor doesn't stay stuck on resize/move */
+	/* last cursor image the focused client set (wl_pointer.set_cursor or
+	 * wp_cursor_shape_device_v1.set_shape); restored by pointer.c when the
+	 * compositor cursor override ends so the cursor doesn't stay stuck on
+	 * resize/move.  client_cursor_shape is an xcursor-theme-independent
+	 * shape enum (0 = none); the shape is rendered by the compositor, the
+	 * surface by the client.  When both are set (mixed-protocol clients)
+	 * the shape wins: it is always rendered at the correct scale. */
 	struct wlr_surface *client_cursor_surface;
 	int client_cursor_hotspot_x, client_cursor_hotspot_y;
+	enum wp_cursor_shape_device_v1_shape client_cursor_shape;
+	/* the seat client that owns client_cursor_shape (0 = none): the shape is
+	 * only restored while that client is focused, so a stale shape from a
+	 * previous client is never shown */
+	struct wlr_seat_client *client_cursor_shape_client;
+	struct wl_listener client_cursor_shape_client_destroy;
 	struct wl_listener client_cursor_destroy;
 
 	struct wl_listener new_output;
@@ -332,6 +386,10 @@ void focus_toplevel(struct server *server, struct toplevel *tl);
 void update_toplevel_output(struct server *server, struct toplevel *tl);
 void arrange_toplevels_work_area(struct server *server,
 	struct wlr_output *output);
+/* maximized window geometry for an output (see toplevel.c): used by the
+ * restore/drag clamps so they land on the same pixel as the maximized box */
+void maximized_box(struct server *server, struct wlr_output *output,
+	struct wlr_box *box);
 void server_new_toplevel(struct wl_listener *listener, void *data);
 void server_new_decoration(struct wl_listener *listener, void *data);
 
@@ -370,6 +428,7 @@ void output_manager_test(struct wl_listener *listener, void *data);
 /* ---- input.c: seat, keyboard, shortcuts ---- */
 void focus_window(struct server *server, struct toplevel *tl);
 void seat_request_set_cursor(struct wl_listener *listener, void *data);
+void seat_request_set_shape(struct wl_listener *listener, void *data);
 void seat_request_set_selection(struct wl_listener *listener, void *data);
 void seat_request_set_primary_selection(struct wl_listener *listener,
 	void *data);
@@ -398,6 +457,9 @@ void begin_move(struct server *server, struct toplevel *tl,
 void end_move(struct server *server);
 void end_resize(struct server *server);
 void update_cursor_style(struct server *server);
+/* show the cursor the focused client currently wants (shape, surface or the
+ * default arrow); used when a compositor cursor override ends */
+void reapply_client_cursor(struct server *server);
 void cursor_motion(struct wl_listener *listener, void *data);
 void cursor_motion_absolute(struct wl_listener *listener, void *data);
 void cursor_button(struct wl_listener *listener, void *data);

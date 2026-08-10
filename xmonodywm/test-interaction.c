@@ -1,5 +1,7 @@
-/* interaction test: simulates the top-10px title bar gestures via the
- * wlr virtual pointer: drag-move, wheel maximize/minimize, double-click close */
+/* interaction test: simulates the colored top title strip (3 segments)
+ * gestures via the wlr virtual pointer: drag-move / long-press move,
+ * wheel maximize/minimize, double-click segment actions (left = minimize,
+ * middle = maximize/restore, right = close) */
 #define _GNU_SOURCE
 #include <stdarg.h>
 #include <stdbool.h>
@@ -205,12 +207,14 @@ static void vp_move_rel(int dx, int dy) {
 	wl_display_flush(display);
 }
 
-static void vp_button(uint32_t state) {
-	zwlr_virtual_pointer_v1_button(vp, 1, BTN_LEFT, state);
+static void vp_button(uint32_t button, uint32_t state) {
+	zwlr_virtual_pointer_v1_button(vp, 1, button, state);
 	zwlr_virtual_pointer_v1_frame(vp);
 	wl_display_flush(display);
 }
 
+/* discrete wheel steps: negative = wheel up, positive = wheel down (the
+ * Wayland axis value is in motion coordinates, where positive y = down) */
 static void vp_scroll(int discrete) {
 	zwlr_virtual_pointer_v1_axis_discrete(vp, 1,
 		WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(discrete * 15), discrete);
@@ -287,79 +291,229 @@ int main(void) {
 	sync_state();
 	vp_motion_abs(640, 315);        /* into the top strip */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
 	vp_motion_abs(740, 420);        /* drag */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	/* grab offset was (100,5); window moved to (640,415)-(840,515). Click at
 	 * (740,465): inside the window but below its strip, must be delivered */
 	sync_state();
 	vp_motion_abs(740, 465);
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	check(got_button_press, "window moved: click at (740,465) reached the window");
 
-	printf("== test: double click in top strip closes the window ==\n");
+	printf("== test: long press on the strip grabs the window ==\n");
+	/* give the double-click window time to lapse so this press is a fresh
+	 * press, not the second click of a double click */
+	usleep(500000);
 	sync_state();
-	vp_motion_abs(740, 420);        /* strip of the moved window is y in [415,425) */
+	vp_motion_abs(700, 420);        /* strip of the moved window: y in [413,425) */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	usleep(500000); /* hold past CONFIG_LONG_PRESS_NS (350ms): grab the window */
+	vp_motion_abs(800, 470);        /* move with the grab */
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	/* the grab anchored at (700,420), offset (60,5) -> window at
+	 * (740,465)-(940,565); a click inside must reach the client */
+	sync_state();
+	vp_motion_abs(800, 500);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	check(got_button_press,
+		"long press grabbed the window (click at (800,500) reached it)");
+
+	printf("== test: double click right third of the strip closes the window ==\n");
+	sync_state();
+	vp_motion_abs(890, 470);       /* strip of the long-press-moved window is
+					y in [463,475); right third is x in [873,940) */
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	usleep(100000); /* wait for the click to be recorded */
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	usleep(300000);
-	check(got_close, "double click in top strip sent close");
+	check(got_close, "double click right third of the strip sent close");
 	/* clean up window A: destroy the role object first, then the surface */
 	xdg_toplevel_destroy(xdg_toplevel);
 	xdg_surface_destroy(xdg_surface);
 	wl_surface_destroy(surface);
 	roundtrip();
 
-	/* ---- window B: wheel up = maximize, wheel down = minimize ---- */
+	/* ---- window A2: double-click the colored strip segments ---- */
+	printf("== test: double click left third of the strip minimizes ==\n");
+	vp_motion_abs(640, 360);
+	roundtrip();
+	create_window();
+	/* window centered at (640,360): pos (540,310), width 200:
+	 * left third [540,606), middle [606,673), right [673,740) */
+	sync_state();
+	vp_motion_abs(560, 315);        /* left third */
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	usleep(100000);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	usleep(200000);
+	/* minimized -> hidden; a click at the old position must NOT reach it */
+	sync_state();
+	vp_motion_abs(560, 315);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	check(!got_button_press,
+		"double click left third minimized the window (click not delivered)");
+	/* clean up window A2 */
+	xdg_toplevel_destroy(xdg_toplevel);
+	xdg_surface_destroy(xdg_surface);
+	wl_surface_destroy(surface);
+	roundtrip();
+
+	/* ---- window A3: double-click middle third toggles maximize/restore ---- */
+	printf("== test: double click middle third maximizes, again restores ==\n");
+	vp_motion_abs(640, 360);
+	roundtrip();
+	create_window();
+	/* window centered at (640,360): pos (540,310) */
+	sync_state();
+	vp_motion_abs(640, 315);        /* middle third */
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	usleep(100000);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	check(last_configure_maximized,
+		"double click middle third maximized the window");
+	/* the maximized window fills the work area: its strip is at the screen
+	 * top; double-click its middle third again to restore */
+	sync_state();
+	vp_motion_abs(640, 5);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	usleep(100000);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	roundtrip();
+	check(!last_configure_maximized,
+		"double click middle third restored the window");
+	/* cleanup window A3 */
+	xdg_toplevel_destroy(xdg_toplevel);
+	xdg_surface_destroy(xdg_surface);
+	wl_surface_destroy(surface);
+	roundtrip();
+
+	/* ---- window B: wheel up toggles maximize/restore, wheel down minimizes ---- */
 	vp_motion_abs(640, 360);        /* place cursor before mapping */
 	roundtrip();
 	create_window();
-	/* window B centered at (640,360): pos (540,310), strip y in [310,320) */
-	printf("== test: wheel up (holding) maximizes, wheel down minimizes ==\n");
+	/* window B centered at (640,360): pos (540,310) */
+	printf("== test: hold right button + wheel up toggles maximize/restore ==\n");
 	sync_state();
-	vp_motion_abs(640, 315);        /* strip of the windowed window */
+	vp_motion_abs(640, 360);        /* over the window body, not the strip */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
-	vp_scroll(1);                    /* scroll up -> maximize */
+	vp_scroll(-1);                   /* scroll up (negative axis) -> maximize */
 	roundtrip();
-	check(last_configure_maximized, "wheel up maximized the window");
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	check(last_configure_maximized, "right-hold + wheel up maximized the window");
+	/* without releasing, another tick arrives instantly (a flick sends
+	 * many ticks at once): same gesture, the debounce must swallow it */
+	sync_state();
+	vp_scroll(-1);
+	roundtrip();
+	check(configure_count == 0,
+		"rapid extra tick inside the burst window did not toggle");
+	check(last_configure_maximized,
+		"window still maximized after the rapid extra tick");
+	/* two ticks at least CONFIG_WHEEL_TICK_GAP_NS (300 ms) apart are the
+	 * next action: wait 400 ms, then one tick must restore */
+	usleep(400000); /* > CONFIG_WHEEL_TICK_GAP_NS (300 ms) */
+	vp_scroll(-1);
 	roundtrip();
 	roundtrip();
-	/* the maximized window's top strip is the screen top; hold there and
+	check(!last_configure_maximized,
+		"right-hold + wheel up 400 ms later restored it (tick gap rule)");
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	/* wheel up once more maximizes again (fresh press = fresh window),
+	 * then the minimize test below runs */
+	vp_motion_abs(640, 360);
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	vp_scroll(-1);
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	/* the maximized window fills the work area; hold right over it and
 	 * scroll down -> minimize */
-	vp_motion_abs(640, 5);
+	vp_motion_abs(640, 360);
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
-	vp_scroll(-1);                   /* scroll down */
+	vp_scroll(1);                    /* scroll down (positive axis) */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	/* minimized -> window B is hidden; a click at its old position must NOT
 	 * reach the client */
 	sync_state();
 	vp_motion_abs(640, 315);
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	check(!got_button_press, "wheel down minimized the window (click not delivered)");
+	/* wheel down again over the (hidden) window's spot restores it */
+	vp_motion_abs(640, 315);        /* old window B position, now hidden */
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	vp_scroll(1);                    /* scroll down (positive axis) -> restore */
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	/* restored -> window B is visible again; a click reaches it */
+	sync_state();
+	vp_motion_abs(640, 360);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	check(got_button_press, "wheel down over the hidden window restored it");
 	/* clean up window B */
 	xdg_toplevel_destroy(xdg_toplevel);
 	xdg_surface_destroy(xdg_surface);
@@ -378,15 +532,25 @@ int main(void) {
 		sync_state();
 		vp_motion_abs(640, 315); /* in the top 10 px of the CSD window */
 		roundtrip();
-		vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+		vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
 		roundtrip();
-		vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+		vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 		roundtrip();
 		check(got_button_press,
 			"CSD window: press in top 10px reached the client (not swallowed)");
 	} else {
 		printf("  (no decoration manager, skipping)\n");
 	}
+	/* clean up window C: destroy the decoration object before the toplevel
+	 * it is attached to (protocol error otherwise) */
+	if (deco) {
+		zxdg_toplevel_decoration_v1_destroy(deco);
+		deco = NULL;
+	}
+	xdg_toplevel_destroy(xdg_toplevel);
+	xdg_surface_destroy(xdg_surface);
+	wl_surface_destroy(surface);
+	roundtrip();
 	printf("note: decoration mode negotiation covered by test-client\n");
 
 	/* ---- window D: edge resize (right + bottom) ---- */
@@ -398,13 +562,15 @@ int main(void) {
 	 * right edge at x=740, bottom edge at y=410 */
 	printf("== test: drag from the right edge resizes ==\n");
 	sync_state();
-	vp_motion_abs(738, 360); /* in the right-edge zone (x>732) */
+	vp_motion_abs(748, 360); /* in the right-edge zone: window D box is
+					(540,310)-(740,410), grab zone is strictly outside the box,
+					x in (740,760] (CONFIG_EDGE_THICKNESS) */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
-	vp_motion_abs(838, 360); /* drag 100 px right */
+	vp_motion_abs(848, 360); /* drag 100 px right */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	check(last_configure_w >= 300,
 		"right-edge drag resized the window (width>=300, got %d)",
@@ -415,13 +581,14 @@ int main(void) {
 
 	printf("== test: drag from the bottom edge resizes ==\n");
 	sync_state();
-	vp_motion_abs(640, 407); /* in the bottom-edge zone (y>402) */
+	vp_motion_abs(640, 412); /* in the bottom-edge zone: y in (410,430] */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
-	vp_motion_abs(640, 457); /* drag 50 px down */
+	vp_motion_abs(640, 462); /* drag 50 px down (412+50: normalized over 720
+				  these land on exactly representable doubles) */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	check(last_configure_h == 150,
 		"bottom-edge drag resized the window to height 150 (got %d)",
@@ -432,17 +599,17 @@ int main(void) {
 	sync_state();
 	vp_motion_abs(640, 315); /* in the top strip of the restored window */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
-	vp_scroll(1); /* wheel up: maximize (saves the 540,310 300x150 box) */
+	vp_scroll(-1); /* wheel up (negative axis): maximize (saves the 540,310 300x150 box) */
 	roundtrip();
-	check(last_configure_maximized, "wheel up maximized the window");
+	check(last_configure_maximized, "right-hold + wheel up maximized the window");
 	/* drag from the maximized window's top strip (the screen top) */
 	vp_motion_abs(640, 5);
 	roundtrip();
 	vp_motion_abs(740, 200); /* drag: crosses threshold -> restore + move */
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	roundtrip();
 	roundtrip();
@@ -455,14 +622,120 @@ int main(void) {
 	sync_state();
 	vp_motion_abs(740, 260);
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
 	roundtrip();
-	vp_button(WL_POINTER_BUTTON_STATE_RELEASED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
 	roundtrip();
 	check(got_button_press,
 		"restored window followed the drag (click at (740,260) reached it)");
 
 	/* cleanup window D */
+	xdg_toplevel_destroy(xdg_toplevel);
+	xdg_surface_destroy(xdg_surface);
+	wl_surface_destroy(surface);
+	roundtrip();
+
+	/* ---- window E: chord gestures (hold one button, use the other) ---- */
+	vp_motion_abs(640, 360);
+	roundtrip();
+	create_window();
+	/* window E centered at (640,360): pos (540,310), size 200x100 */
+	printf("== test: hold right + double-click left toggles maximize ==\n");
+	sync_state();
+	vp_motion_abs(640, 360);        /* over the window body */
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED); /* hold right */
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	usleep(100000); /* first click recorded (must stay within 400ms) */
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	check(last_configure_maximized,
+		"right-hold + left double-click maximized the window");
+
+	printf("== test: right-hold + left double-click again restores ==\n");
+	sync_state();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED); /* hold right */
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	usleep(100000);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	check(!last_configure_maximized,
+		"right-hold + left double-click restored the window");
+
+	printf("== test: hold left + hold right moves the window immediately ==\n");
+	sync_state();
+	/* the window is back at (540,310) 200x100; hold left, then hold right
+	 * and drag straight away - the move starts on the first motion, no
+	 * waiting for the disambiguation timer (cursor "grabbing") */
+	vp_motion_abs(640, 360);        /* window body */
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED); /* hold */
+	roundtrip();
+	vp_motion_abs(740, 460); /* drag: grab offset (100,50) -> (640,410) */
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	roundtrip();
+	/* the window followed the drag to (640,410)-(840,510): a click inside
+	 * must reach the client, one at the old position must not */
+	sync_state();
+	vp_motion_abs(700, 450);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	check(got_button_press,
+		"chord move: window followed the drag (click at (700,450) reached it)");
+	sync_state();
+	vp_motion_abs(640, 360); /* old position, now empty desktop */
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	check(!got_button_press,
+		"chord move: old position no longer holds the window");
+
+	printf("== test: hold left + double-click right closes the window ==\n");
+	sync_state();
+	/* the window is at (640,410)-(840,510) after the move; hold left over
+	 * it and double-click right -> close */
+	vp_motion_abs(700, 450);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED); /* hold left */
+	roundtrip();
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	usleep(100000);
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
+	vp_button(BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	vp_button(BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	roundtrip();
+	usleep(300000);
+	check(got_close, "left-hold + right double-click closed the window");
+
+	/* cleanup window E */
 	xdg_toplevel_destroy(xdg_toplevel);
 	xdg_surface_destroy(xdg_surface);
 	wl_surface_destroy(surface);

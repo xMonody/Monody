@@ -6,6 +6,7 @@
 
 #include "BarController.h"
 #include "DesktopApps.h"
+#include "IconProvider.h"
 #include "LayerShellQt/shell.h"
 #include "LayerShellQt/window.h"
 
@@ -50,6 +51,7 @@ int main(int argc, char *argv[])
     DesktopAppsModel desktopApps;
 
     QQmlApplicationEngine engine;
+    engine.addImageProvider(QStringLiteral("icons"), new IconProvider);
     engine.rootContext()->setContextProperty(QStringLiteral("bar"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("barHeight"), BAR_HEIGHT);
     engine.rootContext()->setContextProperty(QStringLiteral("desktopApps"), &desktopApps);

@@ -20,6 +20,7 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/box.h>
+#include <wlr/util/edges.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_subcompositor.h>
@@ -62,17 +63,75 @@ static void clamp_to_work_area(struct server *server, int *x, int *y,
 	}
 	struct wlr_box area;
 	get_work_area(server, output, &area);
+	/* when a bar sits above the work area, the top limit is taken from the
+	 * maximized geometry itself (maximized_box truncates CONFIG_BORDER_WIDTH
+	 * and the bar gap to int exactly like maximize does), so restore always
+	 * lands on the same pixel the maximized window occupied, shifted by
+	 * CONFIG_BAR_TOP_OVERLAP: set it to -CONFIG_MAXIMIZED_GAP_BAR and
+	 * restore is pixel-identical to maximize, whatever the values are */
+	struct wlr_box out;
+	wlr_output_layout_get_box(server->output_layout, output, &out);
+	int top_limit = area.y;
+	if (area.y > out.y) {           /* bar at the top */
+		struct wlr_box mbox;
+		maximized_box(server, output, &mbox);
+		top_limit = mbox.y + CONFIG_BAR_TOP_OVERLAP
+			+ CONFIG_MAXIMIZED_GAP_BAR;
+	}
 	if (*x < area.x) {
 		*x = area.x;
 	}
-	if (*y < area.y) {
-		*y = area.y;
+	if (*y < top_limit) {
+		*y = top_limit;
 	}
 	if (*x + 40 > area.x + area.width) {
 		*x = area.x + area.width - 40;
 	}
 	if (*y + 40 > area.y + area.height) {
 		*y = area.y + area.height - 40;
+	}
+}
+
+/* geometry of a maximized window: the window box is inset so that the
+ * border ring's outer edge sits CONFIG_MAXIMIZED_GAP (1 px) away from the
+ * work area on every side, except the side(s) facing a layer-shell status
+ * bar's exclusive zone (bar at the top or bottom of the output), which get
+ * CONFIG_MAXIMIZED_GAP_BAR (0 px by default) so the ring sits flush with
+ * the bar.  The bar side is detected by comparing the work area with the
+ * output box: an edge of the work area that lies inside the output box is
+ * adjacent to a bar. */
+void maximized_box(struct server *server, struct wlr_output *output,
+		struct wlr_box *box) {
+	struct wlr_box area;
+	get_work_area(server, output, &area);
+	struct wlr_box out;
+	wlr_output_layout_get_box(server->output_layout, output, &out);
+
+	/* the visible ring is drawn CONFIG_BORDER_WIDTH px outside the window
+	 * box, so the box itself must be inset by that much plus the requested
+	 * gap for the ring to land at the gap */
+	int extent = CONFIG_BORDER_WIDTH;
+	int gap = extent + CONFIG_MAXIMIZED_GAP;
+	int gap_bar = extent + CONFIG_MAXIMIZED_GAP_BAR;
+
+	box->x = area.x + gap;
+	box->y = area.y + gap;
+	box->width = area.width - 2 * gap;
+	box->height = area.height - 2 * gap;
+
+	if (area.x > out.x) {           /* bar at the left */
+		box->x = area.x + gap_bar;
+		box->width -= gap_bar - gap;
+	}
+	if (area.y > out.y) {           /* bar at the top */
+		box->y = area.y + gap_bar;
+		box->height -= gap_bar - gap;
+	}
+	if (area.x + area.width < out.x + out.width) { /* bar at the right */
+		box->width -= gap_bar - gap;
+	}
+	if (area.y + area.height < out.y + out.height) { /* bar at the bottom */
+		box->height -= gap_bar - gap;
 	}
 }
 
@@ -102,12 +161,14 @@ void arrange_toplevels_work_area(struct server *server,
 		}
 		if (tl->xdg_toplevel->current.maximized) {
 			/* re-fit the maximized window to the (possibly shrunk) area */
-			if (box.x != area.x || box.y != area.y ||
-					box.width != area.width || box.height != area.height) {
-				wlr_xdg_toplevel_set_size(tl->xdg_toplevel, area.width,
-					area.height);
-				wlr_scene_node_set_position(&tl->scene_tree->node, area.x,
-					area.y);
+			struct wlr_box mbox;
+			maximized_box(server, output, &mbox);
+			if (box.x != mbox.x || box.y != mbox.y ||
+					box.width != mbox.width || box.height != mbox.height) {
+				wlr_xdg_toplevel_set_size(tl->xdg_toplevel, mbox.width,
+					mbox.height);
+				wlr_scene_node_set_position(&tl->scene_tree->node, mbox.x,
+					mbox.y);
 				update_toplevel_decoration(tl);
 			}
 			continue;
@@ -216,12 +277,12 @@ void set_maximized(struct server *server, struct toplevel *tl,
 		tl->has_restore_box = true;
 
 		struct wlr_output *output = toplevel_output(server, tl);
-		struct wlr_box area;
 		if (output != NULL) {
-			get_work_area(server, output, &area);
-			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, area.width,
-				area.height);
-			wlr_scene_node_set_position(&tl->scene_tree->node, area.x, area.y);
+			struct wlr_box box;
+			maximized_box(server, output, &box);
+			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, box.width,
+				box.height);
+			wlr_scene_node_set_position(&tl->scene_tree->node, box.x, box.y);
 		} else {
 			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, 0, 0);
 		}
@@ -501,6 +562,29 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 			wlr_xdg_toplevel_decoration_v1_set_mode(tl->decoration,
 				tl->decoration_mode);
 		}
+	}
+
+	/* a top/left grab is positioned here, once the client has actually
+	 * committed the new geometry: update_resize() only sends the size
+	 * configure and never moves the node for these grabs, so the fixed
+	 * (opposite) edge stays glued to where it was when the grab started
+	 * and the old, still-larger buffer is never shown at a moved
+	 * position - which is what made the bottom edge bounce while
+	 * resizing from the top.  Re-asserting the position before the next
+	 * frame is drawn keeps the box in sync with the committed buffer. */
+	if (tl->server->resizing && tl->server->resize_toplevel == tl &&
+			base != NULL) {
+		int x = tl->scene_tree->node.x;
+		int y = tl->scene_tree->node.y;
+		if ((tl->server->resize_edges & WLR_EDGE_LEFT) != 0) {
+			x = tl->server->resize_orig.x + tl->server->resize_orig.width
+				- base->geometry.width;
+		}
+		if ((tl->server->resize_edges & WLR_EDGE_TOP) != 0) {
+			y = tl->server->resize_orig.y
+				+ tl->server->resize_orig.height - base->geometry.height;
+		}
+		wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
 	}
 
 	/* geometry (and thus the border and the resize/title zones under the

@@ -12,4 +12,12 @@
  */
 namespace IconFinder {
 QString find(const QString &name);
+
+/**
+ * Locate the icon for an app_id. Tries the plain name first (see find()),
+ * then falls back to the .desktop files: an app_id often matches the file's
+ * basename / StartupWMClass / Name (e.g. app_id "qtcreator" with the icon
+ * stored as QtProject-qtcreator.png) instead of the icon name itself.
+ */
+QString findForAppId(const QString &appId);
 }

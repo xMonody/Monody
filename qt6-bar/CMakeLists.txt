@@ -26,6 +26,8 @@ qt_add_executable(qt6-bar
     src/DesktopApps.h
     src/IconFinder.cpp
     src/IconFinder.h
+    src/IconProvider.cpp
+    src/IconProvider.h
 )
 
 target_include_directories(qt6-bar PRIVATE
