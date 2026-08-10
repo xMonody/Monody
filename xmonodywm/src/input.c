@@ -40,6 +40,29 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 		seat_request_set_cursor);
 	struct wlr_seat_pointer_request_set_cursor_event *event = data;
 	if (event->seat_client == server->seat->pointer_state.focused_client) {
+		/* Over layer-shell surfaces (e.g. the Qt taskbar) keep the
+		 * compositor's own xcursor instead of the client's: Qt's client
+		 * cursor is rendered at a different size on scaled outputs
+		 * (fractional scale), which makes the pointer look bigger over
+		 * the bar. The bar only ever uses the default arrow, so nothing
+		 * is lost. */
+		struct wlr_surface *focused =
+			server->seat->pointer_state.focused_surface;
+		struct layer_surface *ls;
+		bool over_layer = false;
+		if (focused != NULL) {
+			wl_list_for_each(ls, &server->layer_surfaces, link) {
+				if (ls->scene_layer != NULL &&
+						ls->scene_layer->layer_surface != NULL &&
+						ls->scene_layer->layer_surface->surface == focused) {
+					over_layer = true;
+					break;
+				}
+			}
+		}
+		if (over_layer) {
+			return;
+		}
 		/* remember the client's cursor so it can be restored when the
 		 * compositor cursor override (title strip / resize edge) ends */
 		if (server->client_cursor_surface != event->surface) {

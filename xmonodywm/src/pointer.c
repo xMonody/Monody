@@ -358,6 +358,11 @@ static void process_cursor_motion(struct server *server, uint32_t time_msec) {
 					 * the window follows (Windows behavior) */
 					restore_maximized_toplevel(tl);
 					struct wlr_box rb = tl->restore_box;
+					/* restore_maximized_toplevel clamps the restored
+					 * position into the work area, so grip the cursor on the
+					 * window's actual box, not the stale saved one */
+					rb.x = tl->scene_tree->node.x;
+					rb.y = tl->scene_tree->node.y;
 					if (tl->has_restore_box && rb.width > 0) {
 						if (ref_x < rb.x) {
 							ref_x = rb.x;
@@ -395,6 +400,24 @@ static void process_cursor_motion(struct server *server, uint32_t time_msec) {
 			wlr_scene_surface_try_from_buffer(buffer);
 		if (scene_surface != NULL) {
 			surface = scene_surface->surface;
+		} else {
+			/* the hit buffer is the compositor's rounded-corner masked
+			 * content re-render (mask.c): resolve the xdg surface via the
+			 * scene tag on its tree */
+			struct wlr_scene_node *n = node;
+			while (n != NULL) {
+				if (n->data != NULL) {
+					struct scene_tag *tag = n->data;
+					if (tag->type == TAG_TOPLEVEL) {
+						struct toplevel *tl = tag->ptr;
+						if (tl->xdg_toplevel->base != NULL) {
+							surface = tl->xdg_toplevel->base->surface;
+						}
+					}
+					break; /* a closer tagged object won the hit test */
+				}
+				n = n->parent != NULL ? &n->parent->node : NULL;
+			}
 		}
 	}
 

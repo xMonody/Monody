@@ -9,7 +9,12 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
   corner radius) around undecorated windows; client-side decorated windows keep
   their native decorations.  The border is rendered on the GPU by a GLES2
   fragment shader (a rounded-rect SDF) drawn into a wlroots render-target
-  buffer, so resizing costs no CPU rasterization.
+  buffer, so resizing costs no CPU rasterization.  The window content itself
+  is re-rendered through a second GLES2 pass with a rounded-corner alpha mask
+  (mask.c) — wlr_scene cannot clip a surface to a rounded rectangle — so the
+  content's square corners are cut away instead of poking out of the ring,
+  and the ring's inner arc and the content meet on the same arc with no
+  seam.
 * **Transparent windows get a gaussian-blurred backdrop** (frosted glass).
   When a window commits a buffer that actually contains semi-transparent
   pixels (terminal emulators with a transparent background, e.g. `foot`,

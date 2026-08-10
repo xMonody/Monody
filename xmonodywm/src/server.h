@@ -98,6 +98,17 @@ struct text_input {
 	struct wl_listener commit;
 };
 
+/* a manually managed subsurface tree under a toplevel's content tree
+ * (wlr_scene_xdg_surface cannot be used because the content buffer is
+ * re-rendered through the rounded mask instead) */
+struct mask_subsurface {
+	struct toplevel *tl;
+	struct wlr_subsurface *subsurface;
+	struct wlr_scene_tree *tree;
+	struct wl_list link; /* tl->subsurfaces */
+	struct wl_listener destroy;
+};
+
 struct toplevel {
 	struct server *server;
 	struct wlr_xdg_toplevel *xdg_toplevel;
@@ -111,6 +122,20 @@ struct toplevel {
 	struct wlr_scene_buffer *deco_border;
 	int deco_w, deco_h;               /* border buffer size */
 	uint32_t deco_color;              /* border color the buffer was rendered with */
+
+	/* rounded-corner masked content: the client's buffer re-rendered through
+	 * an alpha mask (mask.c) into `masked`; the xdg surface's own scene
+	 * node is replaced by this buffer, so output/frame events are forwarded
+	 * to the client surface here.  Subsurfaces get their own scene trees
+	 * (struct mask_subsurface). */
+	struct wlr_scene_buffer *masked;
+	struct wl_list subsurfaces;       /* struct mask_subsurface.link */
+	struct wl_listener mask_enter;
+	struct wl_listener mask_leave;
+	struct wl_listener mask_sample;
+	struct wl_listener mask_frame;
+	struct wl_listener new_subsurface;
+
 
 	/* GLSL gaussian blur behind transparent windows (terminal emulators);
 	 * deco_blur sits in deco_tree behind the content and holds the blurred
@@ -170,6 +195,16 @@ struct layer_surface {
 	struct wlr_scene_layer_surface_v1 *scene_layer;
 
 	struct wl_list link; /* server.layer_surfaces */
+
+	/* last exclusive-zone signature: when it changes (a bar appears,
+	 * resizes or goes away) the work area changes and existing windows
+	 * must be re-arranged out of the exclusive zone */
+	uint32_t last_anchor;
+	int32_t last_zone;
+	int32_t last_margin_top, last_margin_bottom;
+	int32_t last_margin_left, last_margin_right;
+	bool last_mapped;
+	bool has_last_state;
 
 	struct wl_listener destroy;
 	struct wl_listener commit;
@@ -295,6 +330,8 @@ void set_minimized(struct server *server, struct toplevel *tl,
 	bool minimized);
 void focus_toplevel(struct server *server, struct toplevel *tl);
 void update_toplevel_output(struct server *server, struct toplevel *tl);
+void arrange_toplevels_work_area(struct server *server,
+	struct wlr_output *output);
 void server_new_toplevel(struct wl_listener *listener, void *data);
 void server_new_decoration(struct wl_listener *listener, void *data);
 
@@ -310,6 +347,14 @@ void blur_toplevel_update(struct toplevel *tl);
 void blur_refresh_output(struct server *server,
 	struct wlr_scene_output *scene_output);
 void blur_finish(struct server *server);
+
+/* ---- mask.c: rounded-corner clipping of window content ---- */
+struct wlr_buffer *content_mask_buffer(struct server *server,
+	int width, int height);
+bool content_mask_render(struct server *server, struct wlr_surface *surface,
+	struct wlr_buffer *dst, int width, int height, float radius);
+void mask_toplevel_content(struct toplevel *tl);
+void mask_toplevel_destroy(struct toplevel *tl);
 
 /* ---- layer.c: wlr-layer-shell + work area ---- */
 void get_work_area(struct server *server, struct wlr_output *output,

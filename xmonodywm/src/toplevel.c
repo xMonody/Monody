@@ -15,10 +15,14 @@
 #include <string.h>
 
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/box.h>
+#include <wlr/types/wlr_buffer.h>
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_subcompositor.h>
 
 /* effective window geometry box in layout coordinates */
 void toplevel_box(struct toplevel *tl, struct wlr_box *box) {
@@ -42,6 +46,82 @@ struct wlr_output *toplevel_output(struct server *server,
 	}
 	return output;
 }
+
+/* clamp a position so the window never ends up underneath a layer-shell
+ * bar's exclusive zone: the top-left corner goes into the work area (and
+ * at least 40 px stay visible if the window is bigger than the area) */
+static void clamp_to_work_area(struct server *server, int *x, int *y,
+		int width, int height) {
+	struct wlr_output *output = wlr_output_layout_output_at(
+		server->output_layout, *x + width / 2, *y + height / 2);
+	if (output == NULL) {
+		output = wlr_output_layout_get_center_output(server->output_layout);
+	}
+	if (output == NULL) {
+		return;
+	}
+	struct wlr_box area;
+	get_work_area(server, output, &area);
+	if (*x < area.x) {
+		*x = area.x;
+	}
+	if (*y < area.y) {
+		*y = area.y;
+	}
+	if (*x + 40 > area.x + area.width) {
+		*x = area.x + area.width - 40;
+	}
+	if (*y + 40 > area.y + area.height) {
+		*y = area.y + area.height - 40;
+	}
+}
+
+/* after a layer-shell exclusive-zone change, existing windows that now sit
+ * under the bar are moved back into the work area (the bar must never
+ * cover them), and maximized windows are re-fitted to the new area */
+void arrange_toplevels_work_area(struct server *server,
+		struct wlr_output *output) {
+	struct wlr_box area;
+	get_work_area(server, output, &area);
+	struct toplevel *tl;
+	wl_list_for_each(tl, &server->toplevels, link) {
+		struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
+		if (base == NULL || !base->surface->mapped || tl->minimized ||
+				tl->fullscreen) {
+			/* fullscreen windows deliberately cover the whole output,
+			 * bars included */
+			continue;
+		}
+		struct wlr_box box;
+		toplevel_box(tl, &box);
+		if (box.width <= 0 || box.height <= 0) {
+			continue;
+		}
+		if (toplevel_output(server, tl) != output) {
+			continue;
+		}
+		if (tl->xdg_toplevel->current.maximized) {
+			/* re-fit the maximized window to the (possibly shrunk) area */
+			if (box.x != area.x || box.y != area.y ||
+					box.width != area.width || box.height != area.height) {
+				wlr_xdg_toplevel_set_size(tl->xdg_toplevel, area.width,
+					area.height);
+				wlr_scene_node_set_position(&tl->scene_tree->node, area.x,
+					area.y);
+				update_toplevel_decoration(tl);
+			}
+			continue;
+		}
+		int x = box.x;
+		int y = box.y;
+		clamp_to_work_area(server, &x, &y, box.width, box.height);
+		if (x != box.x || y != box.y) {
+			wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
+			update_toplevel_decoration(tl);
+		}
+	}
+}
+
 
 /* the next/previous mapped toplevel relative to tl, wrapping around the
  * list. include_minimized controls whether hidden windows are eligible.
@@ -103,10 +183,14 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 		}
 	} else {
 		if (tl->has_restore_box && tl->restore_box.width > 0) {
+			int x = tl->restore_box.x;
+			int y = tl->restore_box.y;
+			/* never restore underneath a layer-shell bar */
+			clamp_to_work_area(server, &x, &y, tl->restore_box.width,
+				tl->restore_box.height);
 			wlr_xdg_toplevel_set_size(tl->xdg_toplevel,
 				tl->restore_box.width, tl->restore_box.height);
-			wlr_scene_node_set_position(&tl->scene_tree->node,
-				tl->restore_box.x, tl->restore_box.y);
+			wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
 		}
 	}
 	wlr_xdg_toplevel_set_fullscreen(tl->xdg_toplevel, fullscreen);
@@ -160,10 +244,16 @@ void restore_maximized_toplevel(struct toplevel *tl) {
 		return;
 	}
 	if (tl->has_restore_box && tl->restore_box.width > 0) {
+		int x = tl->restore_box.x;
+		int y = tl->restore_box.y;
+		/* the work area may have shrunk since the window was maximized (a
+		 * bar appeared): clamp the restore into the work area so the window
+		 * never lands back underneath the bar */
+		clamp_to_work_area(tl->server, &x, &y, tl->restore_box.width,
+			tl->restore_box.height);
 		wlr_xdg_toplevel_set_size(tl->xdg_toplevel, tl->restore_box.width,
 			tl->restore_box.height);
-		wlr_scene_node_set_position(&tl->scene_tree->node, tl->restore_box.x,
-			tl->restore_box.y);
+		wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
 	}
 	wlr_xdg_toplevel_set_maximized(tl->xdg_toplevel, false);
 	if (tl->fthandle != NULL) {
@@ -308,16 +398,11 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 		if (box.width > 0 && box.height > 0) {
 			int x = server->cursor->x - box.width / 2;
 			int y = server->cursor->y - box.height / 2;
-			struct wlr_output *output = wlr_output_layout_output_at(
-				server->output_layout, server->cursor->x, server->cursor->y);
-			if (output != NULL) {
-				struct wlr_box area;
-				wlr_output_layout_get_box(server->output_layout, output, &area);
-				if (x < area.x) x = area.x;
-				if (y < area.y) y = area.y;
-				if (x + 40 > area.x + area.width) x = area.x + area.width - 40;
-				if (y + 40 > area.y + area.height) y = area.y + area.height - 40;
-			}
+			/* clamp into the work area, not the full output box: a
+			 * top-anchored bar (layer-shell exclusive zone) must never
+			 * cover a freshly mapped window, even when the cursor is
+			 * over the bar and the window is centered on it */
+			clamp_to_work_area(server, &x, &y, box.width, box.height);
 			wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
 		}
 	}
@@ -342,6 +427,9 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
 	struct toplevel *tl = wl_container_of(listener, tl, unmap);
 	toplevel_unfocus(tl->server, tl);
+	if (tl->masked != NULL) {
+		wlr_scene_buffer_set_buffer(tl->masked, NULL);
+	}
 	update_toplevel_decoration(tl);
 	update_cursor_style(tl->server);
 }
@@ -360,6 +448,7 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	/* remove all listeners attached to the toplevel and its surface; the
 	 * xdg surface listeners (tl->destroy, tl->new_popup) stay linked until
 	 * the xdg surface itself is destroyed */
+	mask_toplevel_destroy(tl);
 	wl_list_remove(&tl->toplevel_destroy.link);
 	wl_list_remove(&tl->map.link);
 	wl_list_remove(&tl->unmap.link);
@@ -417,6 +506,8 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 	/* geometry (and thus the border and the resize/title zones under the
 	 * cursor) may have changed */
 	blur_toplevel_commit(tl);
+	/* rounded-corner masked content tracks the latest committed buffer */
+	mask_toplevel_content(tl);
 	update_toplevel_decoration(tl);
 	update_cursor_style(tl->server);
 }
@@ -534,6 +625,147 @@ static void foreign_toplevel_destroy(struct wl_listener *listener, void *data) {
 	tl->fthandle = NULL;
 }
 
+/* ------------------------------------------------------------------ */
+/* masked content (rounded corners)                                   */
+/* ------------------------------------------------------------------ */
+
+/* the xdg surface's own scene node is replaced by the masked buffer, so
+ * output enter/leave, presentation feedback and frame done must be
+ * forwarded to the client surface from tl->masked */
+static void mask_output_enter(struct wl_listener *listener, void *data) {
+	struct toplevel *tl = wl_container_of(listener, tl, mask_enter);
+	struct wlr_scene_output *scene_output = data;
+	if (tl->xdg_toplevel->base != NULL) {
+		wlr_surface_send_enter(tl->xdg_toplevel->base->surface,
+			scene_output->output);
+	}
+}
+
+static void mask_output_leave(struct wl_listener *listener, void *data) {
+	struct toplevel *tl = wl_container_of(listener, tl, mask_leave);
+	struct wlr_scene_output *scene_output = data;
+	if (tl->xdg_toplevel->base != NULL) {
+		wlr_surface_send_leave(tl->xdg_toplevel->base->surface,
+			scene_output->output);
+	}
+}
+
+static void mask_output_sample(struct wl_listener *listener, void *data) {
+	struct toplevel *tl = wl_container_of(listener, tl, mask_sample);
+	struct wlr_scene_output_sample_event *event = data;
+	if (!event->direct_scanout && tl->xdg_toplevel->base != NULL) {
+		wlr_presentation_surface_textured_on_output(
+			tl->xdg_toplevel->base->surface, event->output->output);
+	}
+}
+
+static void mask_frame_done(struct wl_listener *listener, void *data) {
+	struct toplevel *tl = wl_container_of(listener, tl, mask_frame);
+	struct timespec *now = data;
+	if (tl->xdg_toplevel->base != NULL) {
+		wlr_surface_send_frame_done(tl->xdg_toplevel->base->surface, now);
+	}
+}
+
+static void mask_subsurface_destroy(struct wl_listener *listener, void *data) {
+	struct mask_subsurface *ms = wl_container_of(listener, ms, destroy);
+	(void)data;
+	wl_list_remove(&ms->destroy.link);
+	wl_list_remove(&ms->link);
+	free(ms);
+	/* the scene tree is destroyed by wlr_scene_subsurface_tree's own
+	 * surface-destroy handler */
+}
+
+static void mask_subsurface_add(struct toplevel *tl,
+		struct wlr_subsurface *subsurface) {
+	struct mask_subsurface *ms = calloc(1, sizeof(*ms));
+	if (ms == NULL) {
+		return;
+	}
+	ms->tl = tl;
+	ms->subsurface = subsurface;
+	ms->tree = wlr_scene_subsurface_tree_create(tl->scene_tree,
+		subsurface->surface);
+	if (ms->tree == NULL) {
+		free(ms);
+		return;
+	}
+	ms->destroy.notify = mask_subsurface_destroy;
+	wl_signal_add(&subsurface->events.destroy, &ms->destroy);
+	wl_list_insert(tl->subsurfaces.prev, &ms->link);
+}
+
+static void xdg_toplevel_new_subsurface(struct wl_listener *listener,
+		void *data) {
+	struct toplevel *tl = wl_container_of(listener, tl, new_subsurface);
+	mask_subsurface_add(tl, data);
+}
+
+/* keep every subsurface glued to its surface position (subsurface
+ * positions live in the parent surface's state and change on commit) */
+static void mask_subsurfaces_reposition(struct toplevel *tl) {
+	struct mask_subsurface *ms;
+	wl_list_for_each(ms, &tl->subsurfaces, link) {
+		wlr_scene_node_set_position(&ms->tree->node,
+			-tl->xdg_toplevel->base->geometry.x + ms->subsurface->current.x,
+			-tl->xdg_toplevel->base->geometry.y + ms->subsurface->current.y);
+	}
+}
+
+/* re-render the rounded-corner masked content from the surface's current
+ * buffer; called on every commit that carries a buffer so animations and
+ * damaged partial redraws stay current */
+void mask_toplevel_content(struct toplevel *tl) {
+	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
+	if (tl->masked == NULL || base == NULL || !base->initialized ||
+			!base->surface->mapped || base->surface->buffer == NULL) {
+		return;
+	}
+	struct wlr_surface *surface = base->surface;
+	int w = surface->current.width;
+	int h = surface->current.height;
+	if (w <= 0 || h <= 0) {
+		return;
+	}
+	/* fullscreen windows are square: no rounding */
+	float radius = tl->fullscreen ? 0.0f
+		: (float)(CONFIG_BORDER_RADIUS - CONFIG_BORDER_WIDTH);
+	struct wlr_buffer *buf = content_mask_buffer(tl->server, w, h);
+	if (buf == NULL) {
+		return;
+	}
+	if (!content_mask_render(tl->server, surface, buf, w, h, radius)) {
+		wlr_buffer_drop(buf);
+		return;
+	}
+	/* the scene locks the buffer; drop our reference */
+	wlr_scene_buffer_set_buffer(tl->masked, buf);
+	wlr_buffer_drop(buf);
+	/* keep the content aligned with the xdg geometry */
+	wlr_scene_node_set_position(&tl->masked->node,
+		-base->geometry.x, -base->geometry.y);
+	mask_subsurfaces_reposition(tl);
+}
+
+/* remove all listeners owned by the masked-content bookkeeping; must run
+ * before the deco tree (and thus tl->masked) is destroyed */
+void mask_toplevel_destroy(struct toplevel *tl) {
+	if (tl->masked != NULL) {
+		wl_list_remove(&tl->mask_enter.link);
+		wl_list_remove(&tl->mask_leave.link);
+		wl_list_remove(&tl->mask_sample.link);
+		wl_list_remove(&tl->mask_frame.link);
+	}
+	wl_list_remove(&tl->new_subsurface.link);
+	struct mask_subsurface *ms, *tmp;
+	wl_list_for_each_safe(ms, tmp, &tl->subsurfaces, link) {
+		wl_list_remove(&ms->destroy.link);
+		wl_list_remove(&ms->link);
+		free(ms);
+	}
+}
+
 void server_new_toplevel(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server, new_xdg_toplevel);
 	struct wlr_xdg_toplevel *xdg_toplevel = data;
@@ -562,13 +794,44 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 	 * content, so the blurred backdrop shines through transparent
 	 * backgrounds */
 	blur_toplevel_init(tl);
-	tl->scene_tree = wlr_scene_xdg_surface_create(tl->deco_tree, base);
+	tl->scene_tree = wlr_scene_tree_create(tl->deco_tree);
 	if (tl->scene_tree == NULL) {
 		wlr_scene_node_destroy(&tl->deco_tree->node);
 		free(tl);
 		return;
 	}
+	/* content is re-rendered through a rounded-corner alpha mask (mask.c):
+	 * wlr_scene cannot clip an xdg surface to a rounded rectangle */
+	tl->masked = wlr_scene_buffer_create(tl->scene_tree, NULL);
+	if (tl->masked == NULL) {
+		wlr_scene_node_destroy(&tl->deco_tree->node);
+		free(tl);
+		return;
+	}
 	xdg_surface_tag(tl->scene_tree, TAG_TOPLEVEL, tl);
+	wl_list_init(&tl->subsurfaces);
+	/* the xdg surface's own scene node is gone: forward output/frame
+	 * events to the client surface from the masked buffer */
+	tl->mask_enter.notify = mask_output_enter;
+	wl_signal_add(&tl->masked->events.output_enter, &tl->mask_enter);
+	tl->mask_leave.notify = mask_output_leave;
+	wl_signal_add(&tl->masked->events.output_leave, &tl->mask_leave);
+	tl->mask_sample.notify = mask_output_sample;
+	wl_signal_add(&tl->masked->events.output_sample, &tl->mask_sample);
+	tl->mask_frame.notify = mask_frame_done;
+	wl_signal_add(&tl->masked->events.frame_done, &tl->mask_frame);
+	tl->new_subsurface.notify = xdg_toplevel_new_subsurface;
+	wl_signal_add(&base->surface->events.new_subsurface, &tl->new_subsurface);
+	/* subsurfaces that already existed before this listener was added */
+	struct wlr_subsurface *subsurface;
+	wl_list_for_each(subsurface, &base->surface->current.subsurfaces_below,
+			current.link) {
+		mask_subsurface_add(tl, subsurface);
+	}
+	wl_list_for_each(subsurface, &base->surface->current.subsurfaces_above,
+			current.link) {
+		mask_subsurface_add(tl, subsurface);
+	}
 
 	tl->deco_border = wlr_scene_buffer_create(tl->deco_tree, NULL);
 	if (tl->deco_border != NULL) {

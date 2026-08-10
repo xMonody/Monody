@@ -109,6 +109,7 @@ set(COMPOSITOR_SOURCES
 	src/toplevel.c
 	src/border.c
 	src/blur.c
+	src/mask.c
 	src/layer.c
 	src/output.c
 	src/input.c
