@@ -334,6 +334,9 @@ void update_toplevel_decoration(struct toplevel *tl) {
 	}
 	struct wlr_box box;
 	toplevel_box(tl, &box);
+	wlr_log(WLR_DEBUG, "border: %s box=%d,%d %dx%d",
+		tl->app_id ? tl->app_id : "?", box.x, box.y, box.width,
+		box.height);
 	if (box.width <= 0 || box.height <= 0) {
 		wlr_scene_buffer_set_buffer(tl->deco_border, NULL);
 		return;
@@ -354,6 +357,10 @@ void update_toplevel_decoration(struct toplevel *tl) {
 		(focused ? CONFIG_BORDER_GLOW_SIZE : 0);
 	int bw = box.width + 2 * extent;
 	int bh = box.height + 2 * extent;
+	wlr_log(WLR_DEBUG, "border: %s box=%d,%d %dx%d buf=%dx%d geo=%d,%d %dx%d",
+		tl->app_id ? tl->app_id : "?", box.x, box.y, box.width, box.height,
+		bw, bh, base->geometry.x, base->geometry.y, base->geometry.width,
+		base->geometry.height);
 	uint32_t color = toplevel_border_color(tl);
 	if (tl->deco_w != bw || tl->deco_h != bh || tl->deco_color != color ||
 			tl->deco_focused != focused) {

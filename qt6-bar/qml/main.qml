@@ -2,48 +2,53 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Floating taskbar, rendered as a layer-shell surface (top layer, full width).
+// Floating taskbar, rendered as a layer-shell surface (top layer).
+// Width comes from barCfgWidth (0 = full screen, see src/BarConfig.h).
 // Visible/shown is controlled from C++ after the surface is configured,
 // and toggled by the "window_full" event.
 Window {
     id: win
-    width: Screen.width
-    height: barHeight          // context property, equals the exclusive zone (48)
+    width: barCfgWidth > 0 ? barCfgWidth : Screen.width
+    height: barHeight          // context property, equals the exclusive zone (38)
     visible: false             // shown from C++ once the layer-shell surface exists
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus
 
     // Corner radius of the taskbar body (0 = square corners, desktop shows through)
-    property int barRadius: 8
+    property int barRadius: barCfgRadius
 
     // ---------------------------------------------------------------- chrome
     Rectangle {
         anchors.fill: parent
-        color: "#f2202020"     // Win11-ish dark taskbar, slightly translucent
+        color: Qt.rgba(barCfgBarColor.r, barCfgBarColor.g, barCfgBarColor.b, barCfgOpacity)
         radius: barRadius
         clip: true              // keep hairlines/content inside the rounded shape
 
-        Rectangle {            // hairline top highlight
+        Rectangle {            // hairline top highlight (bottom edge when the bar is at the bottom)
             width: parent.width
             height: 1
-            anchors.top: parent.top
+            y: barCfgAtTop ? 0 : parent.height - 1
             color: "#26ffffff"
-            topLeftRadius: barRadius
-            topRightRadius: barRadius
+            topLeftRadius: barCfgAtTop ? barRadius : 0
+            topRightRadius: barCfgAtTop ? barRadius : 0
+            bottomLeftRadius: barCfgAtTop ? 0 : barRadius
+            bottomRightRadius: barCfgAtTop ? 0 : barRadius
         }
-        Rectangle {            // hairline bottom border
+        Rectangle {            // hairline bottom border (top edge when the bar is at the bottom)
             width: parent.width
             height: 1
-            anchors.bottom: parent.bottom
+            y: barCfgAtTop ? parent.height - 1 : 0
             color: "#33000000"
-            bottomLeftRadius: barRadius
-            bottomRightRadius: barRadius
+            bottomLeftRadius: barCfgAtTop ? barRadius : 0
+            bottomRightRadius: barCfgAtTop ? barRadius : 0
+            topLeftRadius: barCfgAtTop ? 0 : barRadius
+            topRightRadius: barCfgAtTop ? 0 : barRadius
         }
     }
 
     // ---------------------------------------------------------------- content
     RowLayout {
-        height: 40                      // fixed button-row height
+        height: 38                      // button-row height, matches the bar
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter   // centre the 40px row in the bar
@@ -54,7 +59,7 @@ Window {
         // ---- left icon: Windows-like logo, no function for now ----
         Item {
             width: 40
-            height: 40
+            height: 38
 
             Rectangle {                        // hover feedback only
                 anchors.fill: parent
@@ -79,7 +84,7 @@ Window {
         }
 
         // ---- gap: win icon stays two app-gap widths away from the apps ----
-        Item { width: 10; height: 40 }
+        Item { width: 10; height: 38 }
 
         // ---- running windows (one icon per window) ----
         Repeater {
@@ -88,17 +93,34 @@ Window {
             delegate: Item {
                 id: taskItem
                 width: 40
-                height: 40
+                height: 38
 
                 readonly property bool focused: model.id === bar.focusedId
 
-                // Win11-style focus background + hover highlight
+                // Win11-style focus background + hover highlight.
+                // Focused: a shorter rounded bar (narrower vertically) with
+                // the underline pill inside; hover: full-height highlight.
+                // The icon itself keeps its fixed size (never scaled).
                 Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: 2
+                    id: taskBg
+                    width: 36
+                    height: taskItem.focused ? 30 : 36
+                    anchors.centerIn: parent
                     radius: 4
-                    color: taskItem.focused ? "#594d4d4d"
+                    color: taskItem.focused ? barCfgActiveBg
                                             : (itemMouse.containsMouse ? "#26ffffff" : "transparent")
+
+                    // Win11 underline pill, inside the focused background
+                    Rectangle {
+                        visible: taskItem.focused
+                        width: 14
+                        height: 1
+                        radius: 1
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 2
+                        color: barCfgUnderline
+                    }
                 }
 
                 // app icon from the theme (rendered by IconProvider, so
@@ -132,18 +154,6 @@ Window {
                     }
                 }
 
-                // Win11 underline pill: only shown on the focused window
-                Rectangle {
-                    visible: taskItem.focused
-                    width: 14
-                    height: 2
-                    radius: 1
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 1
-                    color: "#d99cc9ff"          // thin light-blue focus underline
-                }
-
                 // (no tooltip: hovering an icon must not show the app name)
 
                 MouseArea {
@@ -161,13 +171,13 @@ Window {
         // ---- flexible spacer: keeps the clock pinned to the far right ----
         Item {
             Layout.fillWidth: true
-            Layout.preferredHeight: 40
+            Layout.preferredHeight: 38
         }
 
         // ---- clock: time above date, Win11 style (no seconds) ----
         Item {
             implicitWidth: clockRow.implicitWidth + 20
-            Layout.preferredHeight: 40
+            Layout.preferredHeight: 38
 
             Rectangle {                        // hover feedback, same as icons
                 anchors.fill: parent
@@ -186,7 +196,7 @@ Window {
                     id: timeText
                     width: parent.width
                     text: Qt.formatTime(new Date(), "HH:mm")
-                    color: "#ffffff"
+                    color: "#626880"
                     font.pixelSize: 12
                     font.weight: Font.Bold
                     horizontalAlignment: Text.AlignRight
@@ -195,7 +205,7 @@ Window {
                     id: dateText
                     width: parent.width
                     text: Qt.formatDate(new Date(), "yyyy/M/d")
-                    color: "#ffffff"
+                    color: "#626880"
                     font.pixelSize: 11
                     font.weight: Font.Bold
                     horizontalAlignment: Text.AlignRight
@@ -231,6 +241,15 @@ Window {
         width: Screen.width
         height: Screen.height
 
+        // The compositor configures this overlay at the output's real
+        // logical size.  With a fractional output scale (e.g. 1.75) Qt
+        // rounds Screen.* up to the next integer scale (2.0), so Screen
+        // reports the wrong logical size; the configured width (this
+        // window's width) is authoritative, so re-derive the height from
+        // the same ratio.
+        readonly property real trueWidth: width
+        readonly property real trueHeight: Screen.height * width / Screen.width
+
         // 3 rows x 4 columns, 88x96px cells
         property int launcherCols: 4
         property int launcherRows: 3
@@ -257,12 +276,14 @@ Window {
         }
 
         Rectangle {                          // panel chrome: same bg as the taskbar
-            x: 6
-            y: win.height + 6
+            // x follows the bar's left edge (bar is centred when fixed-width)
+            x: (launcher.trueWidth - win.width) / 2 + 6
+            // below the bar when at top, above it when at the bottom
+            y: barCfgAtTop ? win.height + 6 : launcher.trueHeight - win.height - height - 6
             width: launcher.launcherCols * launcher.launcherCellW + 2 * launcher.launcherPad
             height: launcher.launcherRows * launcher.launcherCellH + 2 * launcher.launcherPad
             radius: win.barRadius
-            color: "#f2202020"
+            color: Qt.rgba(barCfgBarColor.r, barCfgBarColor.g, barCfgBarColor.b, barCfgOpacity)
             border.color: "#55666666"
             border.width: 1
 

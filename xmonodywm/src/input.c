@@ -11,8 +11,11 @@
 
 #include <stdlib.h>
 
+#include <libinput.h>
+#include <linux/input-event-codes.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include <wlr/backend/libinput.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
@@ -215,16 +218,27 @@ void seat_start_drag(struct wl_listener *listener, void *data) {
 
 /* one attached keyboard device (real or virtual); each gets its own
  * listeners so keys from re-injection devices (e.g. fcitx5's passthrough
- * virtual keyboard) still reach the focused client */
-struct keyboard {
-	struct server *server;
-	struct wlr_keyboard *keyboard;
-	struct wl_list link; /* server.keyboards */
-
-	struct wl_listener key;
-	struct wl_listener modifiers;
-	struct wl_listener destroy;
-};
+ * virtual keyboard) still reach the focused client.  The struct itself
+ * lives in server.h: ime.c walks the same list to pick a real keyboard
+ * for the IM grab. */
+/* is this device a real typing keyboard?  libinput classifies special
+ * buttons (Power Button, Lid Switch, Video Bus, ...) as keyboards because
+ * they have key capabilities; such pseudo-keyboards must never become the
+ * seat keyboard nor the input method's grab keyboard, or every keystroke
+ * on the real keyboard would bypass the IM.  Virtual keyboards (the IM's
+ * passthrough device, test tools) always count as typing keyboards. */
+bool keyboard_is_typing(struct wlr_input_device *device) {
+	if (!wlr_input_device_is_libinput(device)) {
+		return true;
+	}
+	struct libinput_device *dev = wlr_libinput_get_device_handle(device);
+	if (dev == NULL) {
+		return true;
+	}
+	return libinput_device_keyboard_has_key(dev, KEY_Q) ||
+		libinput_device_keyboard_has_key(dev, KEY_A) ||
+		libinput_device_keyboard_has_key(dev, KEY_SPACE);
+}
 
 static void keyboard_modifiers(struct wl_listener *listener, void *data) {
 	struct keyboard *kb = wl_container_of(listener, kb, modifiers);
@@ -328,6 +342,10 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 	struct server *server = kb->server;
 	struct wlr_keyboard_key_event *event = data;
 	uint32_t keycode = event->keycode + 8;
+	wlr_log(WLR_DEBUG, "input: KEY kb=%p code=%u grabbed=%d seat=%p",
+		(void *)kb->keyboard, event->keycode,
+		ime_keyboard_grabbed(server, kb->keyboard),
+		(void *)wlr_seat_get_keyboard(server->seat));
 
 	/* virtual keyboards (wlr_virtual_keyboard_v1 and the IM relay's
 	 * passthrough device) deliver keys with update_state=false: wlroots
@@ -346,6 +364,7 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 	 * keyboards (e.g. fcitx5's passthrough re-injection device) pass
 	 * through normally. */
 	if (ime_keyboard_grabbed(server, kb->keyboard)) {
+		wlr_log(WLR_DEBUG, "input: key from grabbed keyboard, skipping client");
 		return;
 	}
 
@@ -390,6 +409,9 @@ void server_new_virtual_pointer(struct wl_listener *listener, void *data) {
 static void keyboard_attach(struct server *server,
 		struct wlr_input_device *device) {
 	struct wlr_keyboard *keyboard = wlr_keyboard_from_input_device(device);
+	wlr_log(WLR_DEBUG, "input: keyboard attach %p name='%s' type=%d",
+		(void *)keyboard, device->name ? device->name : "(null)",
+		device->type);
 
 	struct keyboard *kb = calloc(1, sizeof(*kb));
 	if (kb == NULL) {
@@ -419,15 +441,22 @@ static void keyboard_attach(struct server *server,
 		xkb_context_unref(context);
 	}
 
-	/* the first keyboard becomes the seat keyboard (so an input method's
-	 * auxiliary virtual keyboard never hijacks the seat); later keyboards
-	 * keep their own listeners and still reach the focused client */
-	bool first = wlr_seat_get_keyboard(server->seat) == NULL;
+	/* give the input method's grab a chance to attach to this keyboard:
+	 * every new device is offered, so a real keyboard that appears while
+	 * the seat is held by the IM's own virtual keyboard still connects
+	 * (fcitx5 with PersistentVirtualKeyboard starts its vk before any
+	 * other keyboard exists).  ime_attach_keyboard() decides. */
+	ime_attach_keyboard(server, keyboard);
+
+	/* the first REAL typing keyboard becomes the seat keyboard (so an
+	 * input method's auxiliary virtual keyboard and special-button
+	 * pseudo-keyboards like the Power Button never hijack the seat);
+	 * later keyboards keep their own listeners and still reach the
+	 * focused client */
+	bool first = wlr_seat_get_keyboard(server->seat) == NULL &&
+		keyboard_is_typing(device);
 	if (first) {
 		wlr_seat_set_keyboard(server->seat, keyboard);
-		/* if the input method grabbed before a keyboard existed, connect it */
-		ime_attach_keyboard(server, keyboard);
-
 		if (server->focused != NULL &&
 				server->focused->xdg_toplevel->base != NULL &&
 				server->focused->xdg_toplevel->base->surface->mapped) {

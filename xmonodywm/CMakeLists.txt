@@ -16,6 +16,7 @@ pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
 pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
 pkg_check_modules(GLES2 REQUIRED IMPORTED_TARGET glesv2)
+pkg_check_modules(LIBINPUT REQUIRED IMPORTED_TARGET libinput)
 
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
@@ -121,6 +122,7 @@ set(COMPOSITOR_SOURCES
 add_library(protocol_stubs STATIC
 	${xdg-shell_CODE}
 	${xdg-decoration-unstable-v1_CODE}
+	${wlr-layer-shell-unstable-v1_CODE}
 	${wlr-virtual-pointer-unstable-v1_CODE}
 	${virtual-keyboard-unstable-v1_CODE}
 	${input-method-unstable-v2_CODE}
@@ -144,6 +146,7 @@ target_link_libraries(xmonodywm PRIVATE
 	PkgConfig::CJSON
 	PkgConfig::EGL
 	PkgConfig::GLES2
+	PkgConfig::LIBINPUT
 	m
 )
 install(TARGETS xmonodywm RUNTIME DESTINATION bin)
@@ -173,6 +176,10 @@ target_link_libraries(test-cursor-shape PRIVATE protocol_stubs PkgConfig::WAYLAN
 
 # border test: two toplevels + focus switches (repaint focused/unfocused
 # border colors); smoke test for the GLES2 border re-render path
+add_executable(test-bar-clamp test-bar-clamp.c)
+target_include_directories(test-bar-clamp PRIVATE ${PROTOCOL_GEN_DIR})
+target_link_libraries(test-bar-clamp PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
+
 add_executable(test-border test-border.c)
 target_include_directories(test-border PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-border PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
@@ -203,6 +210,7 @@ add_dependencies(test-client protocols)
 add_dependencies(test-interaction protocols)
 add_dependencies(test-cursor protocols)
 add_dependencies(test-cursor-shape protocols)
+add_dependencies(test-bar-clamp protocols)
 add_dependencies(test-border protocols)
 add_dependencies(test-quit protocols)
 add_dependencies(test-ime-relay protocols)

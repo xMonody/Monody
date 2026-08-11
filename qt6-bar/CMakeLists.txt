@@ -20,6 +20,7 @@ endif()
 
 qt_add_executable(qt6-bar
     src/main.cpp
+    src/BarConfig.h
     src/BarController.cpp
     src/BarController.h
     src/DesktopApps.cpp

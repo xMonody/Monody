@@ -72,11 +72,12 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 * **Dragging the top strip of a maximized window restores it** to its previous
   position and size, then the drag continues with the cursor gripping the
   restored title bar — same as Windows.
-* **Dragged windows can never slide underneath a status bar.**  While a
-  window is being moved (compositor or `xdg_toplevel.move`), the side facing
-  a layer-shell bar's exclusive zone (top or bottom) is clamped to the work
-  area edge; on bar-less edges the window may still be dragged partially
-  off-screen.
+* **Dragging is clamped Windows-style.**  A layer-shell bar at the top is a
+  hard boundary: the window's top edge can never slide above it.  A bottom
+  bar does not block dragging: the cursor itself is kept above the bar
+  while moving, and the window follows it with no artificial limit, so its
+  bottom may slide past the bar and off the bottom of the screen.  The
+  cursor can never enter a bar's exclusive zone during a move.
 * **The cursor size is never guessed by applications.**  The compositor
   implements `cursor-shape-v1`: a client picks a shape (text, pointer, resize
   handles, ...) and the compositor renders it itself, from its own xcursor
@@ -355,6 +356,10 @@ dependency on a wlroots build tree):
   cursor-shape global, sets a shape on the pointer and drives the pointer
   into a window to check the compositor renders it and restores it after an
   override.
+* `test-bar-clamp.c` — layer-shell bars (top/bottom, NULL-output and
+  per-output) + a virtual pointer: verifies a dragged window can never
+  slide underneath a status bar, and that its top never goes closer than
+  `CONFIG_EDGE_THICKNESS` px to the screen top on a bar-less edge.
 
 * `test-ime-relay.c` — drives the input method relay end to end: a fake
   app (text-input-v3) plus a fake input method (input-method-v2) verify

@@ -19,6 +19,7 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/util/log.h>
 #include <wlr/util/box.h>
 #include <wlr/util/edges.h>
 #include <wlr/types/wlr_buffer.h>
@@ -30,8 +31,18 @@ void toplevel_box(struct toplevel *tl, struct wlr_box *box) {
 	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
 	box->x = tl->scene_tree->node.x;
 	box->y = tl->scene_tree->node.y;
-	box->width = base != NULL ? base->geometry.width : 0;
-	box->height = base != NULL ? base->geometry.height : 0;
+	int gw = base != NULL ? base->geometry.width : 0;
+	int gh = base != NULL ? base->geometry.height : 0;
+	int sw = base != NULL && base->surface != NULL
+		? base->surface->current.width : 0;
+	int sh = base != NULL && base->surface != NULL
+		? base->surface->current.height : 0;
+	/* some clients (Chromium/Electron frameless windows, e.g. QQ's login
+	 * window) report an xdg window geometry smaller than the buffer they
+	 * actually commit; the border and the interaction zones must wrap what
+	 * is visible, so take the larger of the two */
+	box->width = gw > sw ? gw : sw;
+	box->height = gh > sh ? gh : sh;
 }
 
 /* output under the toplevel (its center), or the center output */
@@ -84,10 +95,24 @@ static void clamp_to_work_area(struct server *server, int *x, int *y,
 	if (*y < top_limit) {
 		*y = top_limit;
 	}
-	if (*x + 40 > area.x + area.width) {
+	/* right edge: a bar there clamps the window flush to the work area
+	 * edge (never underneath it); without a bar at least 40 px stay
+	 * visible when the window is bigger than the area */
+	if (area.x + area.width < out.x + out.width) { /* bar at the right */
+		if (*x + width > area.x + area.width) {
+			*x = area.x + area.width - width;
+		}
+	} else if (*x + 40 > area.x + area.width) {
 		*x = area.x + area.width - 40;
 	}
-	if (*y + 40 > area.y + area.height) {
+	/* bottom edge: same rule - a bar there clamps the window's bottom
+	 * to the work area edge, so a restored/mapped window can never slide
+	 * underneath the bar */
+	if (area.y + area.height < out.y + out.height) { /* bar at the bottom */
+		if (*y + height > area.y + area.height) {
+			*y = area.y + area.height - height;
+		}
+	} else if (*y + 40 > area.y + area.height) {
 		*y = area.y + area.height - 40;
 	}
 }
@@ -656,16 +681,56 @@ static void xdg_toplevel_set_app_id(struct wl_listener *listener, void *data) {
 	}
 }
 
+/* defer clamping a popup into its output until the popup has committed
+ * once.  wlr_xdg_popup_unconstrain_from_box() schedules a configure, and
+ * wlroots asserts on surfaces that are not yet initialized (first commit)
+ * — calling it from the new_popup handler crashed the compositor when a
+ * Qt app (fcitx5-config-qt theme page, tooltips, combo boxes) opened a
+ * popup.  A one-shot commit listener runs right after the role commit set
+ * initialized, so the clamp happens before the popup is shown. */
+struct popup_unconstrain {
+	struct wl_listener commit;
+	struct wl_listener destroy;
+	struct wlr_xdg_popup *popup;
+	struct toplevel *tl;
+};
+
+static void popup_unconstrain_handle_commit(struct wl_listener *listener,
+		void *data) {
+	struct popup_unconstrain *pu = wl_container_of(listener, pu, commit);
+	struct server *server = pu->tl->server;
+	struct wlr_output *output = toplevel_output(server, pu->tl);
+	if (output != NULL) {
+		struct wlr_box box;
+		wlr_output_layout_get_box(server->output_layout, output, &box);
+		wlr_xdg_popup_unconstrain_from_box(pu->popup, &box);
+	}
+	wl_list_remove(&pu->commit.link);
+	wl_list_remove(&pu->destroy.link);
+	free(pu);
+}
+
+static void popup_unconstrain_handle_destroy(struct wl_listener *listener,
+		void *data) {
+	struct popup_unconstrain *pu = wl_container_of(listener, pu, destroy);
+	wl_list_remove(&pu->commit.link);
+	wl_list_remove(&pu->destroy.link);
+	free(pu);
+}
+
 static void xdg_toplevel_new_popup(struct wl_listener *listener, void *data) {
 	struct toplevel *tl = wl_container_of(listener, tl, new_popup);
 	struct wlr_xdg_popup *popup = data;
-	struct wlr_output *output = toplevel_output(tl->server, tl);
-	if (output == NULL) {
+	struct popup_unconstrain *pu = calloc(1, sizeof(*pu));
+	if (pu == NULL) {
 		return;
 	}
-	struct wlr_box box;
-	wlr_output_layout_get_box(tl->server->output_layout, output, &box);
-	wlr_xdg_popup_unconstrain_from_box(popup, &box);
+	pu->popup = popup;
+	pu->tl = tl;
+	pu->commit.notify = popup_unconstrain_handle_commit;
+	wl_signal_add(&popup->base->surface->events.commit, &pu->commit);
+	pu->destroy.notify = popup_unconstrain_handle_destroy;
+	wl_signal_add(&popup->base->events.destroy, &pu->destroy);
 }
 
 static void foreign_toplevel_request_maximize(struct wl_listener *listener,
@@ -809,6 +874,12 @@ void mask_toplevel_content(struct toplevel *tl) {
 	struct wlr_surface *surface = base->surface;
 	int w = surface->current.width;
 	int h = surface->current.height;
+	wlr_log(WLR_DEBUG, "mask: %s surface=%dx%d scale=%d buf=%dx%d geo=%d,%d %dx%d",
+		tl->app_id ? tl->app_id : "?", w, h, surface->current.scale,
+		surface->current.buffer ? surface->current.buffer->width : 0,
+		surface->current.buffer ? surface->current.buffer->height : 0,
+		base->geometry.x, base->geometry.y, base->geometry.width,
+		base->geometry.height);
 	if (w <= 0 || h <= 0) {
 		return;
 	}

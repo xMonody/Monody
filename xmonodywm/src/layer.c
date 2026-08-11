@@ -59,7 +59,10 @@ void get_work_area(struct server *server, struct wlr_output *output,
 	struct layer_surface *ls;
 	wl_list_for_each(ls, &server->layer_surfaces, link) {
 		struct wlr_layer_surface_v1 *layer = ls->layer_surface;
-		if (layer->output != output) {
+		/* a bar created without an output spans every output (wlroots
+		 * renders it on each of them), so its exclusive zone shrinks the
+		 * work area of every output - not just the ones it names */
+		if (layer->output != NULL && layer->output != output) {
 			continue;
 		}
 		if (layer->current.layer == ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
@@ -115,6 +118,21 @@ static bool layer_exclusive_zone_changed(struct layer_surface *ls) {
 	return changed;
 }
 
+/* a layer surface's exclusive zone changed (or disappeared): move existing
+ * windows back out of its area.  A bar created without an output spans
+ * every output, so all of them are re-arranged. */
+static void arrange_for_layer_surface(struct layer_surface *ls) {
+	struct wlr_output *output = ls->layer_surface->output;
+	if (output != NULL) {
+		arrange_toplevels_work_area(ls->server, output);
+		return;
+	}
+	struct wlr_output_layout_output *lo;
+	wl_list_for_each(lo, &ls->server->output_layout->outputs, link) {
+		arrange_toplevels_work_area(ls->server, lo->output);
+	}
+}
+
 static void layer_surface_commit(struct wl_listener *listener, void *data) {
 	struct layer_surface *ls = wl_container_of(listener, ls, commit);
 	configure_layer_surface(ls);
@@ -122,14 +140,7 @@ static void layer_surface_commit(struct wl_listener *listener, void *data) {
 	 * windows back out of its exclusive zone instead of letting it cover
 	 * them */
 	if (layer_exclusive_zone_changed(ls)) {
-		struct wlr_output *output = ls->layer_surface->output;
-		if (output == NULL) {
-			output = wlr_output_layout_get_center_output(
-				ls->server->output_layout);
-		}
-		if (output != NULL) {
-			arrange_toplevels_work_area(ls->server, output);
-		}
+		arrange_for_layer_surface(ls);
 	}
 }
 
@@ -139,14 +150,7 @@ static void layer_surface_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&ls->commit.link);
 	wl_list_remove(&ls->link);
 	/* the exclusive zone is gone: let maximized windows expand again */
-	struct wlr_output *output = ls->layer_surface->output;
-	if (output == NULL) {
-		output = wlr_output_layout_get_center_output(
-			ls->server->output_layout);
-	}
-	if (output != NULL) {
-		arrange_toplevels_work_area(ls->server, output);
-	}
+	arrange_for_layer_surface(ls);
 	free(ls);
 }
 

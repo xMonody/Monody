@@ -86,11 +86,25 @@ static void handle_ti_commit_string(void *data, struct zwp_text_input_v3 *ti,
 	if (text) strncpy(ti_commit, text, sizeof(ti_commit) - 1);
 	ti_committed = true;
 }
+static void handle_ti_leave(void *data, struct zwp_text_input_v3 *ti,
+		struct wl_surface *surf) {
+	(void)data; (void)ti; (void)surf;
+}
+static void handle_ti_delete(void *data, struct zwp_text_input_v3 *ti,
+		uint32_t before, uint32_t after) {
+	(void)data; (void)ti; (void)before; (void)after;
+}
+static void handle_ti_done(void *data, struct zwp_text_input_v3 *ti,
+		uint32_t serial) {
+	(void)data; (void)ti; (void)serial;
+}
 static const struct zwp_text_input_v3_listener ti_listener = {
 	.enter = handle_ti_enter,
+	.leave = handle_ti_leave,
 	.preedit_string = handle_ti_preedit,
 	.commit_string = handle_ti_commit_string,
-	.done = NULL,
+	.delete_surrounding_text = handle_ti_delete,
+	.done = handle_ti_done,
 };
 
 static void handle_global(void *data, struct wl_registry *registry,
@@ -215,6 +229,7 @@ int main(void) {
 	vkbd_type(57); /* space */
 	usleep(500000); /* wait for fcitx5 to commit the candidate */
 	wl_display_flush(display);
+	wl_display_roundtrip(display); /* read the preedit/commit events */
 
 	printf("entered=%d preedit=%d committed=%s\n", ti_entered, ti_preedit,
 		ti_committed ? ti_commit : "(none)");

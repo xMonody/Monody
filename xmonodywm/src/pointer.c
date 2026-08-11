@@ -111,11 +111,11 @@ void end_move(struct server *server) {
 	disarm_zone_timer(server);
 }
 
-/* clamp a dragged window's position so it can never slide underneath a
- * layer-shell status bar: the work area is the output box shrunk by the
- * bars' exclusive zones, so an edge of the work area that lies inside the
- * output box faces a bar.  Only those edges are clamped - on bar-less
- * edges the window may still be dragged partially off-screen. */
+/* clamp a dragged window's position so its top can never slide above a
+ * top layer-shell bar; left/right bars clamp their sides too.  The bottom
+ * is deliberately unclamped: the cursor itself is kept above the bar
+ * (clamp_move_cursor), and the window follows it, so it may slide past a
+ * bottom bar and off the bottom of the screen - Windows-style. */
 static void clamp_drag_position(struct server *server, struct toplevel *tl,
 		double *x, double *y) {
 	struct wlr_box box;
@@ -155,10 +155,37 @@ static void clamp_drag_position(struct server *server, struct toplevel *tl,
 			*x = area.x + area.width - box.width;
 		}
 	}
-	if (area.y + area.height < out.y + out.height) { /* bar at the bottom */
-		if (*y + box.height > area.y + area.height) {
-			*y = area.y + area.height - box.height;
-		}
+}
+
+/* while a window is being dragged, the cursor may never enter a layer-shell
+ * bar's exclusive zone: clamp it to the work area of the output under it,
+ * so it stays visible above the bar.  The window follows the cursor with
+ * no bottom limit, so it can slide past the bar and off the screen. */
+static void clamp_move_cursor(struct server *server) {
+	struct wlr_output *output = wlr_output_layout_output_at(
+		server->output_layout, server->cursor->x, server->cursor->y);
+	if (output == NULL) {
+		output = wlr_output_layout_get_center_output(server->output_layout);
+	}
+	if (output == NULL) {
+		return;
+	}
+	struct wlr_box area;
+	get_work_area(server, output, &area);
+	double cx = server->cursor->x;
+	double cy = server->cursor->y;
+	if (cx < area.x) {
+		cx = area.x;
+	} else if (cx > area.x + area.width) {
+		cx = area.x + area.width;
+	}
+	if (cy < area.y) {
+		cy = area.y;
+	} else if (cy > area.y + area.height) {
+		cy = area.y + area.height;
+	}
+	if (cx != server->cursor->x || cy != server->cursor->y) {
+		wlr_cursor_warp(server->cursor, NULL, cx, cy);
 	}
 }
 
@@ -167,10 +194,14 @@ static void move_toplevel_to(struct server *server, double lx, double ly) {
 	if (tl == NULL) {
 		return;
 	}
+	/* the cursor must stay above the status bar while dragging; the
+	 * window follows it with no bottom limit (it may slide past the bar
+	 * and off the screen, Windows-style) */
+	clamp_move_cursor(server);
+	lx = server->cursor->x;
+	ly = server->cursor->y;
 	double nx = lx - server->grab_x;
 	double ny = ly - server->grab_y;
-	/* keep the window out from under a layer-shell status bar (top or
-	 * bottom) while it is being dragged */
 	clamp_drag_position(server, tl, &nx, &ny);
 	wlr_scene_node_set_position(&tl->scene_tree->node, nx, ny);
 	update_toplevel_decoration(tl);

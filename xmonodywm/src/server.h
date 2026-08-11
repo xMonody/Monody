@@ -82,7 +82,14 @@ struct ime {
 	struct wl_listener keyboard_grab_modifiers;
 	bool keyboard_grab_destroy_added; /* grab destroy listener attached */
 
+	/* keycodes forwarded to the IM grab while pressed; used to suppress
+	 * stray key-release events (releases without a matching forwarded
+	 * press are not sent to the IM) */
+	uint32_t forwarded_keys[16];
+	size_t forwarded_key_count;
+
 	/* candidate window shown by the IM (fcitx5) */
+	struct wlr_input_popup_surface_v2 *popup_surface;
 	struct wlr_scene_surface *popup_scene_surface;
 	struct wl_listener popup_destroy;
 };
@@ -253,7 +260,11 @@ struct server {
 	struct wl_list imes;            /* struct ime.link */
 	struct wl_list text_inputs;     /* struct text_input.link */
 	struct wlr_input_method_v2 *input_method;     /* active input method */
-	struct wlr_text_input_v3 *focused_text_input; /* text input of the focused surface */
+	struct wlr_text_input_v3 *focused_text_input; /* enabled text input of the
+							 * focused surface, i.e. the one the IM
+							 * talks to (NULL when none) */
+	struct wlr_surface *ime_focused_surface; /* surface owning text input */
+	struct wl_listener ime_focused_surface_destroy;
 
 	/* IPC socket for status bars (JSON events) */
 	int ipc_fd;
@@ -437,6 +448,22 @@ void seat_start_drag(struct wl_listener *listener, void *data);
 void server_new_virtual_pointer(struct wl_listener *listener, void *data);
 void server_new_virtual_keyboard(struct wl_listener *listener, void *data);
 void server_new_input(struct wl_listener *listener, void *data);
+
+/* one attached keyboard device (real or virtual): keeps per-device key /
+ * modifiers listeners and owns the IM-grab key forwarding state */
+struct keyboard {
+	struct server *server;
+	struct wlr_keyboard *keyboard;
+	struct wl_list link; /* server.keyboards */
+
+	struct wl_listener key;
+	struct wl_listener modifiers;
+	struct wl_listener destroy;
+};
+
+/* ---- input.c: seat, keyboard focus, shortcuts ---- */
+void server_new_virtual_keyboard(struct wl_listener *listener, void *data);
+bool keyboard_is_typing(struct wlr_input_device *device);
 
 /* ---- ime.c: input method relay (fcitx5 / ibus) ---- */
 void ime_set_focus(struct server *server, struct wlr_surface *surface);

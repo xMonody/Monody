@@ -4,6 +4,7 @@
 #include <QQmlContext>
 #include <QQuickWindow>
 
+#include "BarConfig.h"
 #include "BarController.h"
 #include "DesktopApps.h"
 #include "IconProvider.h"
@@ -11,7 +12,7 @@
 #include "LayerShellQt/window.h"
 
 // Must match `height` in qml/main.qml (also used as the exclusive zone).
-constexpr int BAR_HEIGHT = 42;
+constexpr int BAR_HEIGHT = 38;
 
 // The xmonodywm compositor puts its IPC socket in $XDG_RUNTIME_DIR and only
 // falls back to /tmp when that variable is unset. Mirror it so the bar finds
@@ -55,6 +56,15 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("bar"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("barHeight"), BAR_HEIGHT);
     engine.rootContext()->setContextProperty(QStringLiteral("desktopApps"), &desktopApps);
+
+    // Appearance settings from BarConfig.h (see also the anchor block below)
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgAtTop"), barCfg::atTop);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgWidth"), barCfg::width);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgRadius"), barCfg::radius);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgOpacity"), barCfg::opacity);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgBarColor"), barCfg::barColor);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBg"), barCfg::activeBg);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderline"), barCfg::underlineColor);
     engine.load(QUrl(QStringLiteral("qrc:/qml/main.qml")));
     if (engine.rootObjects().isEmpty())
         return -1;
@@ -63,9 +73,16 @@ int main(int argc, char *argv[])
     if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
         if (auto *shell = LayerShellQt::Window::get(window)) {
             shell->setLayer(LayerShellQt::Window::LayerTop);
-            shell->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop)
-                              | LayerShellQt::Window::AnchorLeft
-                              | LayerShellQt::Window::AnchorRight);
+            // Full-width bar: stretch across the whole output edge.
+            LayerShellQt::Window::Anchors anchors;
+            if (barCfg::width <= 0)
+                anchors = LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorLeft)
+                          | LayerShellQt::Window::AnchorRight;
+            // Fixed-width bar: no horizontal anchor, so the compositor
+            // centres the surface on the output.
+            anchors |= barCfg::atTop ? LayerShellQt::Window::AnchorTop
+                                     : LayerShellQt::Window::AnchorBottom;
+            shell->setAnchors(anchors);
             shell->setExclusiveZone(BAR_HEIGHT);
             shell->setMargins(QMargins(0, 0, 0, 0));
             shell->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
