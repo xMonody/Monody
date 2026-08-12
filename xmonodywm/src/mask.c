@@ -349,6 +349,26 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 		if (geom != NULL && margin_opaque != NULL) {
 			*margin_opaque = mask_margin_has_content(geom, width, height);
 		}
+		/* debug: popup renders (geom == NULL) have no margin handling;
+		 * confirm the four corners were cut (1px inside each corner, deep
+		 * in the cut triangle) */
+		if (geom == NULL) {
+			unsigned char c[4][4];
+			int px[4] = { 1, width - 2, 1, width - 2 };
+			int py[4] = { 1, 1, height - 2, height - 2 };
+			for (int i = 0; i < 4; i++) {
+				if (px[i] >= 0 && py[i] >= 0 && px[i] < width &&
+						py[i] < height) {
+					glReadPixels(px[i], py[i], 1, 1, GL_RGBA,
+						GL_UNSIGNED_BYTE, c[i]);
+				} else {
+					c[i][3] = 255;
+				}
+			}
+			wlr_log(WLR_DEBUG, "mask: popup radius=%d corners TL=%u "
+				"TR=%u BL=%u BR=%u", (int)radius, c[0][3], c[1][3],
+				c[2][3], c[3][3]);
+		}
 		/* debug: confirm the geometry-corner clip cut the four corners
 		 * (1px inside the corner, deep in the cut triangle) */
 		if (geom_clip && geom != NULL) {

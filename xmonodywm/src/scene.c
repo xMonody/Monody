@@ -45,7 +45,11 @@ void *scene_tag_at(struct server *server, enum scene_tag_type type,
 			if (tag->type == type) {
 				return tag->ptr;
 			}
-			return NULL; /* a closer tagged object won the hit test */
+			if (tag->type != TAG_POPUP) {
+				return NULL; /* a closer tagged object won the hit test */
+			}
+			/* a popup belongs to a toplevel: keep walking up so the
+			 * owning window is still found under an open menu */
 		}
 		n = n->parent != NULL ? &n->parent->node : NULL;
 	}

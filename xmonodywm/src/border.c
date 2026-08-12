@@ -62,6 +62,7 @@ static const char *border_fragment_src =
 	"uniform vec4 u_color_min;\n"
 	"uniform vec4 u_color_max;\n"
 	"uniform vec4 u_color_close;\n"
+	"uniform float u_strip;\n"
 	"/* rounded-rect SDF: negative inside, positive outside */\n"
 	"float sdRoundBox(vec2 p, vec2 b, float r) {\n"
 	"	vec2 q = abs(p) - b + r;\n"
@@ -97,10 +98,11 @@ static const char *border_fragment_src =
 	"	/* the top border band: the ring's own thickness (u_width +\n"
 	"	 * u_overlap, same as the other three sides), spanning the\n"
 	"	 * window width and split into three equal colored segments;\n"
-	"	 * its rounded top corners match the ring's */\n"
+	"	 * its rounded top corners match the ring's.  Popups (u_strip =\n"
+	"	 * 0) get no band: only the plain ring. */\n"
 	"	float strip_h = u_width + u_overlap;\n"
 	"	float y_bottom = -half_out.y + strip_h;\n"
-	"	float strip = inside_out * (1.0 - smoothstep(-1.0, 1.0, p.y - y_bottom));\n"
+	"	float strip = u_strip * inside_out * (1.0 - smoothstep(-1.0, 1.0, p.y - y_bottom));\n"
 	"	/* three equal segments over the window width: left = minimize,\n"
 	"	 * middle = maximize/restore, right = close */\n"
 	"	float win_w = u_size.x - 2.0 * (u_width + u_glow);\n"
@@ -193,7 +195,8 @@ static uint32_t toplevel_border_color(struct toplevel *tl) {
 /* render the rounded border into a renderable buffer with a custom GLES2
  * pass on wlroots' EGL context; saves and restores all state it touches */
 static bool border_render(struct server *server, struct wlr_buffer *buffer,
-		int width, int height, uint32_t color, bool focused) {
+		int width, int height, uint32_t color, bool focused, bool dialog,
+		bool show_strip, float ring_width) {
 	struct wlr_egl *egl = wlr_gles2_renderer_get_egl(server->renderer);
 	if (egl == NULL) {
 		return false;
@@ -243,28 +246,34 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 		glUniform2f(glGetUniformLocation(program, "u_size"),
 			(float)width, (float)height);
 		glUniform1f(glGetUniformLocation(program, "u_radius"), CONFIG_BORDER_RADIUS);
-		glUniform1f(glGetUniformLocation(program, "u_width"), CONFIG_BORDER_WIDTH);
+		glUniform1f(glGetUniformLocation(program, "u_width"), ring_width);
 		glUniform1f(glGetUniformLocation(program, "u_overlap"), CONFIG_BORDER_OVERLAP);
 		glUniform1f(glGetUniformLocation(program, "u_glow"),
 			focused ? (float)CONFIG_BORDER_GLOW_SIZE : 0.0f);
 		glUniform1f(glGetUniformLocation(program, "u_glow_alpha"),
 			focused ? CONFIG_BORDER_GLOW_ALPHA : 0.0f);
+		glUniform1f(glGetUniformLocation(program, "u_strip"),
+			show_strip ? 1.0f : 0.0f);
 		/* colors are 0xAARRGGBB */
 		glUniform4f(glGetUniformLocation(program, "u_color"),
 			(float)((color >> 16) & 0xFF) / 255.0f,
 			(float)((color >> 8) & 0xFF) / 255.0f,
 			(float)((color >> 0) & 0xFF) / 255.0f,
 			(float)((color >> 24) & 0xFF) / 255.0f);
+		/* a dialog's top border is one single close button: all three
+		 * segments render in the close color (no minimize/maximize hint) */
+		uint32_t seg_min = dialog ? CONFIG_BORDER_COLOR_CLOSE : CONFIG_BORDER_COLOR_MIN;
+		uint32_t seg_max = dialog ? CONFIG_BORDER_COLOR_CLOSE : CONFIG_BORDER_COLOR_MAX;
 		glUniform4f(glGetUniformLocation(program, "u_color_min"),
-			(float)((CONFIG_BORDER_COLOR_MIN >> 16) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_MIN >> 8) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_MIN >> 0) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_MIN >> 24) & 0xFF) / 255.0f);
+			(float)((seg_min >> 16) & 0xFF) / 255.0f,
+			(float)((seg_min >> 8) & 0xFF) / 255.0f,
+			(float)((seg_min >> 0) & 0xFF) / 255.0f,
+			(float)((seg_min >> 24) & 0xFF) / 255.0f);
 		glUniform4f(glGetUniformLocation(program, "u_color_max"),
-			(float)((CONFIG_BORDER_COLOR_MAX >> 16) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_MAX >> 8) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_MAX >> 0) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_MAX >> 24) & 0xFF) / 255.0f);
+			(float)((seg_max >> 16) & 0xFF) / 255.0f,
+			(float)((seg_max >> 8) & 0xFF) / 255.0f,
+			(float)((seg_max >> 0) & 0xFF) / 255.0f,
+			(float)((seg_max >> 24) & 0xFF) / 255.0f);
 		glUniform4f(glGetUniformLocation(program, "u_color_close"),
 			(float)((CONFIG_BORDER_COLOR_CLOSE >> 16) & 0xFF) / 255.0f,
 			(float)((CONFIG_BORDER_COLOR_CLOSE >> 8) & 0xFF) / 255.0f,
@@ -312,6 +321,23 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 		eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	}
 	return ok;
+}
+
+/* allocate a buffer for border rendering (ARGB8888, linear) */
+struct wlr_buffer *border_alloc_buffer(struct server *server,
+		int width, int height) {
+	return wlr_allocator_create_buffer(server->allocator, width, height,
+		border_format());
+}
+
+/* a plain rounded ring (no title strip, no glow) for popups: the ring
+ * outlines the rounded corners so they stay visible even when the popup
+ * content and the background behind it share a color (an all-white menu
+ * over a white window would otherwise look square). */
+bool border_render_ring(struct server *server, struct wlr_buffer *buffer,
+		int width, int height, uint32_t color, float ring_width) {
+	return border_render(server, buffer, width, height, color, false, false,
+		false, ring_width);
 }
 
 /* ------------------------------------------------------------------ */
@@ -362,16 +388,17 @@ void update_toplevel_decoration(struct toplevel *tl) {
 		bw, bh, base->geometry.x, base->geometry.y, base->geometry.width,
 		base->geometry.height);
 	uint32_t color = toplevel_border_color(tl);
+	bool dialog = toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl);
 	if (tl->deco_w != bw || tl->deco_h != bh || tl->deco_color != color ||
-			tl->deco_focused != focused) {
-		struct wlr_buffer *buffer = wlr_allocator_create_buffer(
-			tl->server->allocator, bw, bh, border_format());
+			tl->deco_focused != focused || tl->deco_dialog != dialog) {
+		struct wlr_buffer *buffer = border_alloc_buffer(tl->server, bw, bh);
 		if (buffer == NULL) {
 			wlr_log(WLR_ERROR, "border: failed to allocate %dx%d buffer",
 				bw, bh);
 			return;
 		}
-		if (!border_render(tl->server, buffer, bw, bh, color, focused)) {
+		if (!border_render(tl->server, buffer, bw, bh, color, focused,
+				dialog, true, CONFIG_BORDER_WIDTH)) {
 			wlr_buffer_drop(buffer);
 			return;
 		}
@@ -382,6 +409,7 @@ void update_toplevel_decoration(struct toplevel *tl) {
 		tl->deco_h = bh;
 		tl->deco_color = color;
 		tl->deco_focused = focused;
+		tl->deco_dialog = dialog;
 	}
 	wlr_scene_node_set_position(&tl->deco_border->node, box.x - extent,
 		box.y - extent);

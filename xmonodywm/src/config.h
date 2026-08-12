@@ -27,6 +27,10 @@
 #define CONFIG_BORDER_COLOR 0xFF676E95u  /* 0xFF7C73B0u  活动窗口, 0xAARRGGBB (#7C73B0) */
 #define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u /*  非活动窗口(#676E95) */
 
+/* popup (菜单/提示框/下拉框) 边框 */
+#define CONFIG_POPUP_BORDER_WIDTH  1            /* popup 边框宽度 (px) */
+#define CONFIG_POPUP_BORDER_COLOR  0xFF676E95u    /* popup 边框颜色, 0xAARRGGBB */
+
 /* Windows 11 风格的柔和光晕, 只画在**活动**窗口的边框外侧: 从边框外缘
  * 向外延伸 CONFIG_BORDER_GLOW_SIZE px, 用边框色按 (1-t^2)^2 曲线渐进淡出
  * (边缘最亮, 越往外越淡, 到边界精确归零); 峰值不透明度为

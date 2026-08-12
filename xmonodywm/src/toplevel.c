@@ -61,6 +61,30 @@ void toplevel_box(struct toplevel *tl, struct wlr_box *box) {
 	}
 }
 
+/* a dialog / transient window: one that declared a parent toplevel via
+ * xdg_toplevel.set_parent (GTK/Qt dialogs do this).  wlroots keeps
+ * toplevel->parent updated (including clearing it when the parent
+ * unmaps), so a live check is always current. */
+bool toplevel_is_dialog(struct toplevel *tl) {
+	return tl->xdg_toplevel != NULL && tl->xdg_toplevel->parent != NULL;
+}
+
+/* a window pinned to a fixed size via min == max constraints (e.g. QQ's
+ * login window, splash screens): it cannot meaningfully be resized,
+ * maximized or minimized.  A dimension is fixed only when min > 0 and
+ * equals max (min=0/max=0 means "unconstrained"). */
+bool toplevel_is_fixed_size(struct toplevel *tl) {
+	if (tl->xdg_toplevel == NULL) {
+		return false;
+	}
+	return tl->xdg_toplevel->current.min_width > 0 &&
+		tl->xdg_toplevel->current.min_width ==
+			tl->xdg_toplevel->current.max_width &&
+		tl->xdg_toplevel->current.min_height > 0 &&
+		tl->xdg_toplevel->current.min_height ==
+			tl->xdg_toplevel->current.max_height;
+}
+
 /* output under the toplevel (its center), or the center output */
 struct wlr_output *toplevel_output(struct server *server,
 		struct toplevel *tl) {
@@ -310,6 +334,11 @@ void set_maximized(struct server *server, struct toplevel *tl,
 	if (tl->xdg_toplevel->base == NULL) {
 		return;
 	}
+	if (toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl)) {
+		/* dialogs and fixed-size windows (e.g. QQ's login) are never
+		 * maximized (their top border is a close button, not a title bar) */
+		return;
+	}
 	if (maximized && tl->xdg_toplevel->current.maximized) {
 		/* already maximized: re-fit the window to the maximized geometry.
 		 * A maximized window can drift off it (e.g. a client-drag of a
@@ -410,6 +439,10 @@ void restore_maximized_toplevel(struct toplevel *tl) {
 
 void set_minimized(struct server *server, struct toplevel *tl,
 		bool minimized) {
+	if (toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl)) {
+		/* dialogs and fixed-size windows have no minimize button */
+		return;
+	}
 	if (tl->minimized == minimized) {
 		return;
 	}
@@ -789,9 +822,317 @@ static void popup_unconstrain_handle_destroy(struct wl_listener *listener,
 	free(pu);
 }
 
+static void mask_popup_new_popup(struct wl_listener *listener, void *data);
+static void mask_subsurface_destroy(struct wl_listener *listener, void *data);
+static void mask_popup_decoration(struct mask_popup *mp);
+
+/* rounded-corner popups (mask.c) - the popup surface's own scene node is
+ * replaced by a masked re-render buffer, so its corners get
+ * CONFIG_BORDER_RADIUS exactly like the windows.  The popup is still hit-
+ * tested through the buffer: its tree carries a TAG_POPUP tag that pointer
+ * input resolves back to the popup surface (see pointer.c). */
+
+/* the masked buffer replaces the popup's scene node, so output enter/
+ * leave, presentation feedback and frame done must be forwarded to the
+ * popup surface from mp->masked */
+static void mask_popup_output_enter(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, mask_enter);
+	struct wlr_scene_output *scene_output = data;
+	if (mp->popup != NULL && mp->popup->base != NULL) {
+		wlr_surface_send_enter(mp->popup->base->surface,
+			scene_output->output);
+	}
+}
+
+static void mask_popup_output_leave(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, mask_leave);
+	struct wlr_scene_output *scene_output = data;
+	if (mp->popup != NULL && mp->popup->base != NULL) {
+		wlr_surface_send_leave(mp->popup->base->surface,
+			scene_output->output);
+	}
+}
+
+static void mask_popup_output_sample(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, mask_sample);
+	struct wlr_scene_output_sample_event *event = data;
+	if (!event->direct_scanout && mp->popup != NULL &&
+			mp->popup->base != NULL) {
+		wlr_presentation_surface_textured_on_output(
+			mp->popup->base->surface, event->output->output);
+	}
+}
+
+static void mask_popup_frame_done(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, mask_frame);
+	struct timespec *now = data;
+	if (mp->popup != NULL && mp->popup->base != NULL) {
+		wlr_surface_send_frame_done(mp->popup->base->surface, now);
+	}
+}
+
+/* keep every popup subsurface glued to its surface position */
+static void mask_popup_subsurfaces_reposition(struct mask_popup *mp) {
+	struct mask_subsurface *ms;
+	wl_list_for_each(ms, &mp->subsurfaces, link) {
+		wlr_scene_node_set_position(&ms->tree->node,
+			-mp->popup->base->geometry.x + ms->subsurface->current.x,
+			-mp->popup->base->geometry.y + ms->subsurface->current.y);
+	}
+}
+
+static void mask_popup_subsurface_add(struct mask_popup *mp,
+		struct wlr_subsurface *subsurface) {
+	struct mask_subsurface *ms = calloc(1, sizeof(*ms));
+	if (ms == NULL) {
+		return;
+	}
+	ms->tl = mp->tl;
+	ms->subsurface = subsurface;
+	ms->tree = wlr_scene_subsurface_tree_create(mp->tree,
+		subsurface->surface);
+	if (ms->tree == NULL) {
+		free(ms);
+		return;
+	}
+	ms->destroy.notify = mask_subsurface_destroy;
+	wl_signal_add(&subsurface->events.destroy, &ms->destroy);
+	wl_list_insert(mp->subsurfaces.prev, &ms->link);
+}
+
+static void mask_popup_new_subsurface(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, new_subsurface);
+	mask_popup_subsurface_add(mp, data);
+}
+
+/* re-render the popup's rounded content from its current buffer; called on
+ * every commit that carries a buffer (same contract as mask_toplevel_content) */
+static void mask_popup_content(struct mask_popup *mp) {
+	struct wlr_xdg_surface *base = mp->popup->base;
+	if (mp->masked == NULL || base == NULL || !base->initialized ||
+			!base->surface->mapped || base->surface->buffer == NULL) {
+		return;
+	}
+	struct wlr_surface *surface = base->surface;
+	int w = surface->current.width;
+	int h = surface->current.height;
+	if (w <= 0 || h <= 0) {
+		return;
+	}
+	wlr_log(WLR_DEBUG, "mask: popup surface=%dx%d scale=%d buf=%dx%d "
+		"geo=%d,%d %dx%d radius=%d",
+		w, h, surface->current.scale,
+		surface->current.buffer ? surface->current.buffer->width : 0,
+		surface->current.buffer ? surface->current.buffer->height : 0,
+		base->geometry.x, base->geometry.y, base->geometry.width,
+		base->geometry.height, CONFIG_BORDER_RADIUS - CONFIG_BORDER_WIDTH);
+	struct wlr_buffer *buf = content_mask_buffer(mp->tl->server, w, h);
+	if (buf == NULL) {
+		return;
+	}
+	/* the popup content is rounded to the ring's inner arc, exactly like
+	 * the toplevel content (the ring itself - mask_popup_decoration -
+	 * spans CONFIG_BORDER_RADIUS).  No geometry probe / margin handling:
+	 * popups (Qt menus, tooltips, combo boxes) have no drop shadow */
+	if (!content_mask_render(mp->tl->server, surface, buf, w, h,
+			(float)(CONFIG_BORDER_RADIUS - CONFIG_BORDER_WIDTH),
+			NULL, false, NULL)) {
+		wlr_buffer_drop(buf);
+		return;
+	}
+	wlr_scene_buffer_set_buffer(mp->masked, buf);
+	wlr_buffer_drop(buf);
+	wlr_scene_node_set_position(&mp->masked->node,
+		-base->geometry.x, -base->geometry.y);
+	mask_popup_subsurfaces_reposition(mp);
+}
+
+/* the popup moved / resized / repainted: glue the tree to its geometry and
+ * re-render the rounded content */
+static void mask_popup_commit(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, commit);
+	(void)data;
+	wlr_scene_node_set_position(&mp->tree->node,
+		mp->popup->current.geometry.x, mp->popup->current.geometry.y);
+	mask_popup_content(mp);
+	mask_popup_decoration(mp);
+}
+
+/* the popup's thin rounded ring (border.c): without it the transparent
+ * corners of a popup blend into whatever is behind it, so an all-white
+ * menu over a white window looks square - gray popups only LOOK rounded
+ * by luck of the background contrast.  The ring outlines the corners,
+ * same as the window ring (no title strip, no glow). */
+static void mask_popup_decoration(struct mask_popup *mp) {
+	struct wlr_xdg_surface *base = mp->popup->base;
+	if (mp->deco_border == NULL || base == NULL) {
+		return;
+	}
+	if (!base->surface->mapped || base->surface->buffer == NULL ||
+			base->geometry.width <= 0 || base->geometry.height <= 0) {
+		wlr_scene_buffer_set_buffer(mp->deco_border, NULL);
+		return;
+	}
+	/* width 0 disables the popup border entirely */
+	if (CONFIG_POPUP_BORDER_WIDTH <= 0) {
+		wlr_scene_buffer_set_buffer(mp->deco_border, NULL);
+		return;
+	}
+	int extent = (int)(CONFIG_POPUP_BORDER_WIDTH + 0.5);
+	int bw = base->geometry.width + 2 * extent;
+	int bh = base->geometry.height + 2 * extent;
+	uint32_t color = CONFIG_POPUP_BORDER_COLOR;
+	wlr_log(WLR_DEBUG, "border: popup box=%d,%d %dx%d buf=%dx%d width=%.1f",
+		base->geometry.x, base->geometry.y, base->geometry.width,
+		base->geometry.height, bw, bh, CONFIG_POPUP_BORDER_WIDTH);
+	if (mp->deco_w != bw || mp->deco_h != bh || mp->deco_color != color) {
+		struct wlr_buffer *buffer = border_alloc_buffer(mp->tl->server,
+			bw, bh);
+		if (buffer == NULL) {
+			wlr_log(WLR_ERROR, "border: popup failed to allocate %dx%d",
+				bw, bh);
+			return;
+		}
+		if (!border_render_ring(mp->tl->server, buffer, bw, bh, color,
+				CONFIG_POPUP_BORDER_WIDTH)) {
+			wlr_buffer_drop(buffer);
+			return;
+		}
+		wlr_scene_buffer_set_buffer(mp->deco_border, buffer);
+		wlr_buffer_drop(buffer);
+		mp->deco_w = bw;
+		mp->deco_h = bh;
+		mp->deco_color = color;
+	}
+	wlr_scene_node_set_position(&mp->deco_border->node, -extent, -extent);
+	/* the ring must outline the popup even when a subsurface or a nested
+	 * popup (submenu) overlaps the edge - same as the window ring */
+	wlr_scene_node_raise_to_top(&mp->deco_border->node);
+}
+
+/* the wlr_xdg_popup object is gone (menu closed / grab dismissed): drop
+ * every listener and stop rendering.  The scene tree and this struct live
+ * until the popup's xdg surface itself is destroyed (mask_popup_xdg_destroy), so
+ * the tree can safely outlive the popup object. */
+static void mask_popup_destroy(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, destroy);
+	(void)data;
+	wl_list_remove(&mp->commit.link);
+	wl_list_remove(&mp->new_subsurface.link);
+	wl_list_remove(&mp->mask_enter.link);
+	wl_list_remove(&mp->mask_leave.link);
+	wl_list_remove(&mp->mask_sample.link);
+	wl_list_remove(&mp->mask_frame.link);
+	wl_list_remove(&mp->new_popup.link);
+	wl_list_remove(&mp->destroy.link);
+	wl_list_remove(&mp->link);
+	if (mp->masked != NULL) {
+		wlr_scene_buffer_set_buffer(mp->masked, NULL);
+	}
+	if (mp->deco_border != NULL) {
+		wlr_scene_buffer_set_buffer(mp->deco_border, NULL);
+	}
+	struct mask_subsurface *ms, *tmp;
+	wl_list_for_each_safe(ms, tmp, &mp->subsurfaces, link) {
+		wl_list_remove(&ms->destroy.link);
+		wl_list_remove(&ms->link);
+		free(ms);
+	}
+}
+
+/* the popup's xdg surface is destroyed: release the scene tree (and with it
+ * the masked buffer and every subsurface / nested popup tree) and the struct */
+static void mask_popup_xdg_destroy(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, xdg_destroy);
+	(void)data;
+	wl_list_remove(&mp->xdg_destroy.link);
+	if (mp->tree != NULL) {
+		wlr_scene_node_destroy(&mp->tree->node);
+	}
+	free(mp);
+}
+
+static void xdg_popup_attach(struct toplevel *tl, struct wlr_xdg_popup *popup,
+		struct wlr_scene_tree *parent_tree) {
+	struct mask_popup *mp = calloc(1, sizeof(*mp));
+	if (mp == NULL) {
+		return;
+	}
+	mp->tl = tl;
+	mp->popup = popup;
+	/* the popup's own surface is re-rendered through the rounded-corner
+	 * alpha mask (mask.c) like the toplevel content: a plain scene surface
+	 * cannot round corners.  The tree is tagged so pointer input resolves
+	 * back to the popup surface. */
+	mp->tree = wlr_scene_tree_create(parent_tree);
+	if (mp->tree == NULL) {
+		free(mp);
+		return;
+	}
+	mp->masked = wlr_scene_buffer_create(mp->tree, NULL);
+	if (mp->masked == NULL) {
+		wlr_scene_node_destroy(&mp->tree->node);
+		free(mp);
+		return;
+	}
+	/* the rounded ring behind/around the content; purely visual, never
+	 * intercepts pointer input */
+	mp->deco_border = wlr_scene_buffer_create(mp->tree, NULL);
+	if (mp->deco_border != NULL) {
+		mp->deco_border->point_accepts_input = border_buffer_no_input;
+	}
+	xdg_surface_tag(mp->tree, TAG_POPUP, popup);
+	wl_list_init(&mp->subsurfaces);
+	/* forward output/frame events from the masked buffer to the popup */
+	mp->mask_enter.notify = mask_popup_output_enter;
+	wl_signal_add(&mp->masked->events.output_enter, &mp->mask_enter);
+	mp->mask_leave.notify = mask_popup_output_leave;
+	wl_signal_add(&mp->masked->events.output_leave, &mp->mask_leave);
+	mp->mask_sample.notify = mask_popup_output_sample;
+	wl_signal_add(&mp->masked->events.output_sample, &mp->mask_sample);
+	mp->mask_frame.notify = mask_popup_frame_done;
+	wl_signal_add(&mp->masked->events.frame_done, &mp->mask_frame);
+	mp->new_subsurface.notify = mask_popup_new_subsurface;
+	wl_signal_add(&popup->base->surface->events.new_subsurface,
+		&mp->new_subsurface);
+	/* subsurfaces that already existed before this listener was added */
+	struct wlr_subsurface *subsurface;
+	wl_list_for_each(subsurface,
+			&popup->base->surface->current.subsurfaces_below, current.link) {
+		mask_popup_subsurface_add(mp, subsurface);
+	}
+	wl_list_for_each(subsurface,
+			&popup->base->surface->current.subsurfaces_above, current.link) {
+		mask_popup_subsurface_add(mp, subsurface);
+	}
+	/* position the tree at the popup geometry (relative to the parent)
+	 * and re-render on every commit; nested popups (submenus) attach here */
+	mp->commit.notify = mask_popup_commit;
+	wl_signal_add(&popup->base->surface->events.commit, &mp->commit);
+	mp->new_popup.notify = mask_popup_new_popup;
+	wl_signal_add(&popup->base->events.new_popup, &mp->new_popup);
+	mp->destroy.notify = mask_popup_destroy;
+	wl_signal_add(&popup->events.destroy, &mp->destroy);
+	mp->xdg_destroy.notify = mask_popup_xdg_destroy;
+	wl_signal_add(&popup->base->events.destroy, &mp->xdg_destroy);
+	wl_list_insert(tl->popups.prev, &mp->link);
+
+	wlr_scene_node_set_position(&mp->tree->node,
+		popup->current.geometry.x, popup->current.geometry.y);
+}
+
+static void mask_popup_new_popup(struct wl_listener *listener, void *data) {
+	struct mask_popup *mp = wl_container_of(listener, mp, new_popup);
+	/* a nested popup (Qt submenu): its parent scene node is this popup's
+	 * own scene tree */
+	xdg_popup_attach(mp->tl, data, mp->tree);
+}
+
 static void xdg_toplevel_new_popup(struct wl_listener *listener, void *data) {
 	struct toplevel *tl = wl_container_of(listener, tl, new_popup);
 	struct wlr_xdg_popup *popup = data;
+
+	/* unconstrain the popup into its output box */
 	struct popup_unconstrain *pu = calloc(1, sizeof(*pu));
 	if (pu == NULL) {
 		return;
@@ -802,6 +1143,11 @@ static void xdg_toplevel_new_popup(struct wl_listener *listener, void *data) {
 	wl_signal_add(&popup->base->surface->events.commit, &pu->commit);
 	pu->destroy.notify = popup_unconstrain_handle_destroy;
 	wl_signal_add(&popup->base->events.destroy, &pu->destroy);
+
+	/* the popup's parent is the toplevel surface, so its scene tree lives
+	 * inside the toplevel's content tree (whose origin is the window
+	 * geometry top-left, exactly what the popup geometry is relative to) */
+	xdg_popup_attach(tl, popup, tl->scene_tree);
 }
 
 static void foreign_toplevel_request_maximize(struct wl_listener *listener,
@@ -1011,6 +1357,32 @@ void mask_toplevel_destroy(struct toplevel *tl) {
 		wl_list_remove(&ms->link);
 		free(ms);
 	}
+	struct mask_popup *mp, *mp_tmp;
+	wl_list_for_each_safe(mp, mp_tmp, &tl->popups, link) {
+		wl_list_remove(&mp->commit.link);
+		wl_list_remove(&mp->new_subsurface.link);
+		wl_list_remove(&mp->mask_enter.link);
+		wl_list_remove(&mp->mask_leave.link);
+		wl_list_remove(&mp->mask_sample.link);
+		wl_list_remove(&mp->mask_frame.link);
+		wl_list_remove(&mp->new_popup.link);
+		wl_list_remove(&mp->destroy.link);
+		wl_list_remove(&mp->xdg_destroy.link);
+		wl_list_remove(&mp->link);
+		if (mp->masked != NULL) {
+			wlr_scene_buffer_set_buffer(mp->masked, NULL);
+		}
+		if (mp->deco_border != NULL) {
+			wlr_scene_buffer_set_buffer(mp->deco_border, NULL);
+		}
+		struct mask_subsurface *ms, *tmp2;
+		wl_list_for_each_safe(ms, tmp2, &mp->subsurfaces, link) {
+			wl_list_remove(&ms->destroy.link);
+			wl_list_remove(&ms->link);
+			free(ms);
+		}
+		free(mp);
+	}
 }
 
 void server_new_toplevel(struct wl_listener *listener, void *data) {
@@ -1057,6 +1429,7 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 	}
 	xdg_surface_tag(tl->scene_tree, TAG_TOPLEVEL, tl);
 	wl_list_init(&tl->subsurfaces);
+	wl_list_init(&tl->popups);
 	/* the xdg surface's own scene node is gone: forward output/frame
 	 * events to the client surface from the masked buffer */
 	tl->mask_enter.notify = mask_output_enter;

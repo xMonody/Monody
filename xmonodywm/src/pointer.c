@@ -30,9 +30,13 @@
  * CONFIG_TITLEBAR_HEIGHT px of the content, split into three colored
  * segments (minimize / maximize / close). */
 static bool is_in_titlebar_zone(struct server *server, struct toplevel *tl) {
-	if (tl->decoration_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE) {
+	if (tl->decoration_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE &&
+			!toplevel_is_dialog(tl) && !toplevel_is_fixed_size(tl)) {
 		return false; /* client draws its own title bar, use it natively */
 	}
+	/* dialogs and fixed-size windows: the top border band is the
+	 * compositor's close button even when the client draws its own (CSD)
+	 * decorations */
 	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
 	if (base == NULL || !base->surface->mapped) {
 		return false;
@@ -53,6 +57,12 @@ static bool is_in_titlebar_zone(struct server *server, struct toplevel *tl) {
  * minimize, middle third = toggle maximize/restore, right third = close */
 static enum zone_action title_strip_action(struct server *server,
 		struct toplevel *tl) {
+	/* a window that cannot maximize/minimize (dialog, or fixed-size like
+	 * QQ's login) has a top border that is one single close button: a
+	 * double-click anywhere on it closes the window */
+	if (toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl)) {
+		return ZONE_CLOSE;
+	}
 	struct wlr_box box;
 	toplevel_box(tl, &box);
 	if (box.width <= 0) {
@@ -316,7 +326,10 @@ static uint32_t toplevel_resize_edges(struct server *server,
 	if (tl->minimized || tl->xdg_toplevel->base == NULL ||
 			tl->decoration_mode ==
 				WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE ||
-			tl->xdg_toplevel->current.maximized) {
+			tl->xdg_toplevel->current.maximized ||
+			toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl)) {
+		/* dialogs and fixed-size windows (e.g. QQ's login) are never
+		 * resized, so their edges never get a resize cursor either */
 		return 0;
 	}
 	struct wlr_box box;
@@ -326,6 +339,17 @@ static uint32_t toplevel_resize_edges(struct server *server,
 	}
 	double lx = server->cursor->x;
 	double ly = server->cursor->y;
+	/* per-axis fixed dimensions (min == max) disable only that axis's
+	 * resize handles */
+	bool fixed_w = tl->xdg_toplevel->current.min_width > 0 &&
+		tl->xdg_toplevel->current.min_width ==
+			tl->xdg_toplevel->current.max_width;
+	bool fixed_h = tl->xdg_toplevel->current.min_height > 0 &&
+		tl->xdg_toplevel->current.min_height ==
+			tl->xdg_toplevel->current.max_height;
+	if (fixed_w && fixed_h) {
+		return 0;
+	}
 	uint32_t edges = 0;
 	double zone = CONFIG_EDGE_THICKNESS / 2.0; /* half out, half in */
 	double x0 = box.x - zone;              /* left handle outer edge */
@@ -339,19 +363,19 @@ static uint32_t toplevel_resize_edges(struct server *server,
 	bool on_top = ly >= y0 && ly < box.y + zone;
 	bool on_bottom = ly > box.y + box.height - zone && ly <= y1;
 	/* left/right handles run the full height (both corner zones included) */
-	if (on_left && in_y) {
+	if (on_left && in_y && !fixed_w) {
 		edges |= WLR_EDGE_LEFT;
 	}
-	if (on_right && in_y) {
+	if (on_right && in_y && !fixed_w) {
 		edges |= WLR_EDGE_RIGHT;
 	}
 	/* the bottom handle runs the full width */
-	if (on_bottom && in_x) {
+	if (on_bottom && in_x && !fixed_h) {
 		edges |= WLR_EDGE_BOTTOM;
 	}
 	/* the top edge itself is the title strip; only its two corner zones
 	 * are diagonal resize handles */
-	if (on_top && (on_left || on_right)) {
+	if (on_top && (on_left || on_right) && !fixed_h) {
 		edges |= WLR_EDGE_TOP;
 	}
 	return edges;
@@ -475,16 +499,26 @@ void update_cursor_style(struct server *server) {
 	} else {
 		struct toplevel *tl = toplevel_nearby(server);
 		if (tl != NULL) {
-			uint32_t edges = toplevel_resize_edges(server, tl);
-			/* the corner resize zones win over the title strip; everywhere
-			 * else the top strip keeps its all-scroll cursor */
-			bool corner = (edges & WLR_EDGE_TOP) != 0;
-			if (corner || !is_in_titlebar_zone(server, tl)) {
-				if (edges != 0) {
-					name = resize_cursor_name(edges);
+			if (toplevel_is_dialog(tl)) {
+				/* dialogs: the top close band gets the all-scroll hint
+				 * (CONFIG_EDGE_THICKNESS / title-strip height); the edges
+				 * keep the client's own cursor - no resize cursors */
+				if (is_in_titlebar_zone(server, tl)) {
+					name = CONFIG_TITLEBAR_CURSOR;
 				}
 			} else {
-				name = CONFIG_TITLEBAR_CURSOR;
+				uint32_t edges = toplevel_resize_edges(server, tl);
+				/* the corner resize zones win over the title strip;
+				 * everywhere else the top strip keeps its all-scroll
+				 * cursor */
+				bool corner = (edges & WLR_EDGE_TOP) != 0;
+				if (corner || !is_in_titlebar_zone(server, tl)) {
+					if (edges != 0) {
+						name = resize_cursor_name(edges);
+					}
+				} else {
+					name = CONFIG_TITLEBAR_CURSOR;
+				}
 			}
 		}
 	}
@@ -901,7 +935,14 @@ static void process_cursor_motion(struct server *server, uint32_t time_msec) {
 			while (n != NULL) {
 				if (n->data != NULL) {
 					struct scene_tag *tag = n->data;
-					if (tag->type == TAG_TOPLEVEL) {
+					if (tag->type == TAG_POPUP) {
+						/* a rounded popup (Qt menu): the hit buffer is its
+						 * masked re-render; resolve the popup surface */
+						struct wlr_xdg_popup *popup = tag->ptr;
+						if (popup != NULL && popup->base != NULL) {
+							surface = popup->base->surface;
+						}
+					} else if (tag->type == TAG_TOPLEVEL) {
 						struct toplevel *tl = tag->ptr;
 						if (tl->xdg_toplevel->base != NULL) {
 							surface = tl->xdg_toplevel->base->surface;

@@ -48,6 +48,7 @@ enum scene_layer {
  * an arbitrary hit-tested scene node (walking up the parents). */
 enum scene_tag_type {
 	TAG_TOPLEVEL,
+	TAG_POPUP,
 	TAG_LAYER,
 };
 
@@ -117,6 +118,38 @@ struct mask_subsurface {
 	struct wl_listener destroy;
 };
 
+/* a manually managed xdg popup under a toplevel's content tree: the popup
+ * surface (and its subsurfaces) is rendered through a wlr_scene_xdg_surface
+ * tree so popups show above the window and receive input; nested popups
+ * (Qt submenus) attach through the same handler via this popup's own
+ * new_popup signal. */
+struct mask_popup {
+	struct toplevel *tl;
+	struct wlr_xdg_popup *popup;
+	struct wlr_scene_tree *tree;
+	/* rounded-corner masked content (mask.c), exactly like a toplevel:
+	 * the popup surface's buffer is re-rendered through the alpha mask, so
+	 * the popup corners get CONFIG_BORDER_RADIUS like the windows */
+	struct wlr_scene_buffer *masked;
+	/* the popup's thin rounded ring (border.c): outlines the rounded
+	 * corners so they stay visible even when popup content and the
+	 * background share a color (a white menu over a white window) */
+	struct wlr_scene_buffer *deco_border;
+	int deco_w, deco_h;               /* ring buffer size */
+	uint32_t deco_color;              /* ring color the buffer was rendered with */
+	struct wl_list subsurfaces;       /* struct mask_subsurface.link */
+	struct wl_list link;              /* tl->popups */
+	struct wl_listener commit;
+	struct wl_listener new_popup;
+	struct wl_listener destroy;
+	struct wl_listener xdg_destroy;
+	struct wl_listener new_subsurface;
+	struct wl_listener mask_enter;
+	struct wl_listener mask_leave;
+	struct wl_listener mask_sample;
+	struct wl_listener mask_frame;
+};
+
 struct toplevel {
 	struct server *server;
 	struct wlr_xdg_toplevel *xdg_toplevel;
@@ -131,6 +164,7 @@ struct toplevel {
 	int deco_w, deco_h;               /* border buffer size */
 	uint32_t deco_color;              /* border color the buffer was rendered with */
 	bool deco_focused;                /* whether the buffer was rendered with the focus glow */
+	bool deco_dialog;                 /* whether the buffer was rendered as a dialog top band */
 
 	/* whether the border/interaction box wraps the committed surface
 	 * instead of the xdg window geometry: set by the rounded-mask pass
@@ -148,6 +182,7 @@ struct toplevel {
 	 * (struct mask_subsurface). */
 	struct wlr_scene_buffer *masked;
 	struct wl_list subsurfaces;       /* struct mask_subsurface.link */
+	struct wl_list popups;            /* struct mask_popup.link */
 	struct wl_listener mask_enter;
 	struct wl_listener mask_leave;
 	struct wl_listener mask_sample;
@@ -392,6 +427,12 @@ void xdg_surface_tag(struct wlr_scene_tree *tree, enum scene_tag_type type,
 void *scene_tag_at(struct server *server, enum scene_tag_type type,
 	double lx, double ly);
 struct toplevel *toplevel_at(struct server *server);
+/* a dialog / transient window (declared a parent toplevel via
+ * xdg_toplevel.set_parent, as GTK/Qt dialogs do): not resizable, no
+ * maximize/minimize, its top border is a single close button */
+bool toplevel_is_dialog(struct toplevel *tl);
+/* a fixed-size window (min == max): cannot resize / maximize / minimize */
+bool toplevel_is_fixed_size(struct toplevel *tl);
 
 /* ---- toplevel.c: xdg-shell windows, window state, decorations ---- */
 void toplevel_box(struct toplevel *tl, struct wlr_box *box);
@@ -422,6 +463,10 @@ void server_new_decoration(struct wl_listener *listener, void *data);
 bool border_buffer_no_input(struct wlr_scene_buffer *buffer,
 	double *sx, double *sy);
 void update_toplevel_decoration(struct toplevel *tl);
+struct wlr_buffer *border_alloc_buffer(struct server *server,
+	int width, int height);
+bool border_render_ring(struct server *server, struct wlr_buffer *buffer,
+	int width, int height, uint32_t color, float ring_width);
 
 /* ---- blur.c: GLSL gaussian background blur for transparent windows ---- */
 void blur_toplevel_init(struct toplevel *tl);
