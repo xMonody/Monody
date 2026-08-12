@@ -344,7 +344,8 @@ static const struct wlr_drm_format *blur_format(void) {
  * pixel with alpha < ALPHA_OPAQUE: the window really is transparent.
  * Returns true when no verdict could be reached (conservative). */
 static bool blur_buffer_has_transparency(struct server *server,
-		struct wlr_buffer *buf) {
+		struct wlr_surface *surface) {
+	struct wlr_buffer *buf = &surface->buffer->base;
 	struct wlr_texture *tex = wlr_texture_from_buffer(server->renderer, buf);
 	if (tex == NULL) {
 		return true; /* cannot tell: assume transparent */
@@ -368,6 +369,14 @@ static bool blur_buffer_has_transparency(struct server *server,
 	uint8_t *pixels = malloc((size_t)w * h * 4);
 	bool transparent = true;
 	if (!gl_begin(server, &st)) {
+		goto out;
+	}
+
+	/* sampling the client buffer directly in a custom GL pass: honor the
+	 * explicit-sync acquire point exactly like the rounded-mask pass */
+	if (!mask_wait_syncobj_acquire(server, surface)) {
+		wlr_log(WLR_ERROR, "blur: failed to wait on acquire point");
+		gl_end(&st);
 		goto out;
 	}
 
@@ -657,7 +666,7 @@ void blur_toplevel_commit(struct toplevel *tl) {
 	if (base != NULL && base->surface->buffer != NULL &&
 			!wlr_buffer_is_opaque(&base->surface->buffer->base)) {
 		enabled = blur_buffer_has_transparency(tl->server,
-			&base->surface->buffer->base);
+			base->surface);
 	}
 	if (enabled == tl->blur_enabled) {
 		return;

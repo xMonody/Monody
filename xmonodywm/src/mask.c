@@ -30,12 +30,16 @@
 
 #include <drm_fourcc.h>
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include <wlr/render/allocator.h>
 #include <wlr/render/drm_format_set.h>
+#include <wlr/render/drm_syncobj.h>
 #include <wlr/render/egl.h>
 #include <wlr/render/gles2.h>
 #include <wlr/render/wlr_renderer.h>
@@ -238,6 +242,105 @@ static bool mask_margin_has_content(const struct wlr_box *geom,
 	return false;
 }
 
+/* Explicit-sync glue for the custom mask pass.  wlr_scene_surface would
+ * wait on the client's acquire timeline before sampling and signal the
+ * release point through wlr_buffer.events.release.  The rounded-corner mask
+ * pass below bypasses wlr_scene_surface and samples the client buffer with
+ * raw GL, so it must perform the equivalent GPU-side wait itself.
+ *
+ * The DRM syncobj <-> sync_file conversion is done by wlroots
+ * (wlr_drm_syncobj_timeline_export_sync_file); the sync_file is then handed
+ * to the EGL implementation as a native fence.  This is the same mechanism
+ * wlroots' GLES2 renderer uses internally, exposed here only because the
+ * mask pass is custom GL. */
+static PFNEGLCREATESYNCKHRPROC mask_egl_create_sync;
+static PFNEGLDESTROYSYNCKHRPROC mask_egl_destroy_sync;
+static PFNEGLWAITSYNCKHRPROC mask_egl_wait_sync;
+static bool mask_egl_sync_procs_loaded;
+
+static void mask_load_egl_sync_procs(void) {
+	if (mask_egl_sync_procs_loaded) {
+		return;
+	}
+	mask_egl_create_sync = (PFNEGLCREATESYNCKHRPROC)
+		eglGetProcAddress("eglCreateSyncKHR");
+	mask_egl_destroy_sync = (PFNEGLDESTROYSYNCKHRPROC)
+		eglGetProcAddress("eglDestroySyncKHR");
+	mask_egl_wait_sync = (PFNEGLWAITSYNCKHRPROC)
+		eglGetProcAddress("eglWaitSyncKHR");
+	mask_egl_sync_procs_loaded = true;
+}
+
+bool mask_wait_syncobj_acquire(struct server *server,
+		struct wlr_surface *surface) {
+	struct wlr_linux_drm_syncobj_surface_v1_state *state =
+		wlr_linux_drm_syncobj_v1_get_surface_state(surface);
+	if (state == NULL || state->acquire_timeline == NULL) {
+		return true;
+	}
+
+	if (!server->renderer->features.timeline) {
+		wlr_log(WLR_ERROR, "mask: explicit sync surface but renderer "
+			"timeline support is unavailable");
+		return false;
+	}
+
+	struct wlr_egl *egl = wlr_gles2_renderer_get_egl(server->renderer);
+	if (egl == NULL) {
+		return false;
+	}
+	EGLDisplay dpy = wlr_egl_get_display(egl);
+	if (dpy == EGL_NO_DISPLAY) {
+		return false;
+	}
+
+	mask_load_egl_sync_procs();
+	if (mask_egl_create_sync == NULL || mask_egl_destroy_sync == NULL ||
+			mask_egl_wait_sync == NULL) {
+		wlr_log(WLR_ERROR, "mask: EGL native fence sync is unavailable");
+		return false;
+	}
+
+	int sync_file_fd = wlr_drm_syncobj_timeline_export_sync_file(
+		state->acquire_timeline, state->acquire_point);
+	if (sync_file_fd < 0) {
+		wlr_log(WLR_ERROR, "mask: failed to export acquire point as "
+			"sync_file");
+		return false;
+	}
+
+	int dup_fd = fcntl(sync_file_fd, F_DUPFD_CLOEXEC, 0);
+	if (dup_fd < 0) {
+		wlr_log_errno(WLR_ERROR, "mask: failed to dup acquire sync_file");
+		close(sync_file_fd);
+		return false;
+	}
+
+	EGLint attribs[3] = {
+		EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
+		dup_fd,
+		EGL_NONE,
+	};
+	EGLSyncKHR sync = mask_egl_create_sync(dpy,
+		EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
+	if (sync == EGL_NO_SYNC_KHR) {
+		wlr_log(WLR_ERROR, "mask: eglCreateSyncKHR failed for acquire "
+			"point");
+		close(dup_fd);
+		close(sync_file_fd);
+		return false;
+	}
+	close(sync_file_fd);
+
+	bool ok = mask_egl_wait_sync(dpy, sync, 0) == EGL_TRUE;
+	mask_egl_destroy_sync(dpy, sync);
+	if (!ok) {
+		wlr_log(WLR_ERROR, "mask: eglWaitSyncKHR failed for acquire point");
+		return false;
+	}
+	return true;
+}
+
 /* render the surface's current buffer into `dst` with a rounded-corner
  * alpha mask of `radius`; radius 0 renders the content unclipped.  When
  * `geom` is non-NULL, `*margin_opaque` reports whether the surface has
@@ -281,6 +384,12 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 	EGLSurface prev_read = eglGetCurrentSurface(EGL_READ);
 	if (!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) {
 		wlr_log(WLR_ERROR, "mask: eglMakeCurrent failed");
+		return false;
+	}
+
+	/* wait on the client's acquire timeline before sampling its buffer */
+	if (!mask_wait_syncobj_acquire(server, surface)) {
+		eglMakeCurrent(prev_dpy, prev_draw, prev_read, prev_ctx);
 		return false;
 	}
 

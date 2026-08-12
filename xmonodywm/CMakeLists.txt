@@ -61,6 +61,7 @@ set(PROTOCOLS
 	tablet-unstable-v2
 	xdg-activation-v1
 	wp_fractional_scale_v1
+	linux-drm-syncobj-v1
 )
 
 set(PROTOCOL_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/protocol)

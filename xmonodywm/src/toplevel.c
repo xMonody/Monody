@@ -940,6 +940,25 @@ static void mask_popup_new_subsurface(struct wl_listener *listener, void *data) 
 	mask_popup_subsurface_add(mp, data);
 }
 
+/* For explicit-sync surfaces, tie the client's release point to the
+ * compositor-owned masked buffer.  The client buffer is sampled while
+ * producing `buf`; once the scene releases `buf`, the compositor is
+ * guaranteed to be done with every buffer that contributed to it, so the
+ * release point can be signalled safely. */
+static void mask_signal_syncobj_release(struct wlr_surface *surface,
+		struct wlr_buffer *buf) {
+	struct wlr_linux_drm_syncobj_surface_v1_state *state =
+		wlr_linux_drm_syncobj_v1_get_surface_state(surface);
+	if (state == NULL) {
+		return;
+	}
+	if (!wlr_linux_drm_syncobj_v1_state_signal_release_with_buffer(state,
+			buf)) {
+		wlr_log(WLR_ERROR, "mask: failed to schedule syncobj release "
+			"point signal");
+	}
+}
+
 /* re-render the popup's rounded content from its current buffer; called on
  * every commit that carries a buffer (same contract as mask_toplevel_content) */
 static void mask_popup_content(struct mask_popup *mp) {
@@ -972,10 +991,12 @@ static void mask_popup_content(struct mask_popup *mp) {
 	if (!content_mask_render(mp->tl->server, surface, buf, w, h,
 			(float)(CONFIG_BORDER_RADIUS - CONFIG_BORDER_WIDTH),
 			NULL, false, NULL)) {
+		mask_signal_syncobj_release(surface, buf);
 		wlr_buffer_drop(buf);
 		return;
 	}
 	wlr_scene_buffer_set_buffer(mp->masked, buf);
+	mask_signal_syncobj_release(surface, buf);
 	wlr_buffer_drop(buf);
 	wlr_scene_node_set_position(&mp->masked->node,
 		-base->geometry.x, -base->geometry.y);
@@ -1367,6 +1388,7 @@ void mask_toplevel_content(struct toplevel *tl) {
 	 * know the margin is a transparent shadow (not real content) */
 	if (!content_mask_render(tl->server, surface, buf, w, h, radius,
 			&base->geometry, false, &margin_opaque)) {
+		mask_signal_syncobj_release(surface, buf);
 		wlr_buffer_drop(buf);
 		return;
 	}
@@ -1380,12 +1402,14 @@ void mask_toplevel_content(struct toplevel *tl) {
 			base->geometry.width < w || base->geometry.height < h)) {
 		if (!content_mask_render(tl->server, surface, buf, w, h, radius,
 				&base->geometry, true, NULL)) {
+			mask_signal_syncobj_release(surface, buf);
 			wlr_buffer_drop(buf);
 			return;
 		}
 	}
 	/* the scene locks the buffer; drop our reference */
 	wlr_scene_buffer_set_buffer(tl->masked, buf);
+	mask_signal_syncobj_release(surface, buf);
 	wlr_buffer_drop(buf);
 	/* keep the content aligned with the xdg geometry */
 	wlr_scene_node_set_position(&tl->masked->node,

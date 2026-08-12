@@ -380,6 +380,30 @@ int main(int argc, char *argv[]) {
 		return EXIT_FAILURE;
 	}
 
+	/* linux-drm-syncobj-v1: advertise explicit synchronization only when
+	 * both the renderer and the backend can handle timeline wait/signal.
+	 * Use the renderer's DRM fd (the device actually used for rendering),
+	 * never a hard-coded /dev/dri/card0. */
+	if (server.renderer->features.timeline && server.backend->features.timeline) {
+		int drm_fd = wlr_renderer_get_drm_fd(server.renderer);
+		if (drm_fd >= 0) {
+			server.linux_drm_syncobj_manager =
+				wlr_linux_drm_syncobj_manager_v1_create(server.display, 1,
+					drm_fd);
+			if (server.linux_drm_syncobj_manager == NULL) {
+				wlr_log(WLR_ERROR,
+					"failed to create linux-drm-syncobj-v1 global");
+			}
+		} else {
+			wlr_log(WLR_INFO,
+				"renderer has no DRM fd, disabling linux-drm-syncobj-v1");
+		}
+	} else {
+		wlr_log(WLR_INFO,
+			"renderer/backend timeline support unavailable, disabling "
+			"linux-drm-syncobj-v1");
+	}
+
 	setenv("WAYLAND_DISPLAY", socket, true);
 	/* the Wayland socket is live: the WM is up, now start the user's
 	 * daemons from ~/.config/mywm/run (plus any -s command) */

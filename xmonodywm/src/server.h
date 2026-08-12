@@ -26,6 +26,7 @@
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_input_method_v2.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_scene.h>
@@ -308,6 +309,12 @@ struct server {
 	struct wl_listener activation_request_activate;
 	struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
 
+	/* linux-drm-syncobj-v1: explicit buffer synchronization.  The manager
+	 * is created only when both the renderer and the backend advertise
+	 * timeline support; the DRM fd comes from the renderer, so clients
+	 * import timelines on the same device the compositor renders with. */
+	struct wlr_linux_drm_syncobj_manager_v1 *linux_drm_syncobj_manager;
+
 	/* cursor-shape-v1: lets clients pick a cursor shape which the compositor
 	 * renders with its own theme (so the size always matches the output
 	 * scale, no client-side guessing); handled like wl_pointer.set_cursor */
@@ -508,6 +515,11 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 	const struct wlr_box *geom, bool geom_clip, bool *margin_opaque);
 void mask_toplevel_content(struct toplevel *tl);
 void mask_toplevel_destroy(struct toplevel *tl);
+/* Wait on a surface's explicit-sync acquire point before sampling its
+ * buffer in a custom GL pass (mask.c, blur.c).  Returns true when there
+ * is nothing to wait for or the GPU-side wait succeeded. */
+bool mask_wait_syncobj_acquire(struct server *server,
+	struct wlr_surface *surface);
 
 /* ---- layer.c: wlr-layer-shell + work area ---- */
 void get_work_area(struct server *server, struct wlr_output *output,

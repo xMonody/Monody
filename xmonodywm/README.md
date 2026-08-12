@@ -111,6 +111,7 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 | `wp_cursor_shape_manager_v1` | clients pick a cursor shape; the compositor renders it from its own xcursor theme at the output's (fractional) scale, so the size always matches — no client-side guessing |
 | `xdg_activation_v1` | client-driven window activation/focus; activation requests focus (and restore) the matching toplevel |
 | `wp_fractional_scale_v1` | surfaces are told the output's exact fractional scale; toplevels get the notification through their masked scene buffer |
+| `wp_linux_drm_syncobj_manager_v1` | explicit buffer synchronization via DRM syncobj timelines; custom mask/blur GL passes wait on acquire points, release points are tied to the masked buffer |
 | `zwp_input_method_v2` | input method (fcitx5/ibus) — activation, keyboard grab, preedit/commit |
 | `zwp_text_input_v3` | per-window text input — enter/leave, surrounding text, commit string |
 
