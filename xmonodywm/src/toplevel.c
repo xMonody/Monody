@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_presentation_time.h>
@@ -1095,6 +1096,21 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 /* xdg-decoration                                                     */
 /* ------------------------------------------------------------------ */
 
+/* clients that draw their own decorations but whose own window resize is
+ * broken (frameless Electron windows, e.g. QQ): the compositor owns their
+ * frame (resize edges, top strip, resize cursor) exactly like an
+ * undecorated window, because the client's own edge resize never works.
+ * QQ explicitly requests client-side decorations but cannot resize
+ * itself, so its request is overridden to NONE below. */
+static bool toplevel_force_undecorated(struct toplevel *tl) {
+	if (tl->app_id == NULL) {
+		return false;
+	}
+	/* QQ (linuxqq) and variants: frameless, requests CSD, but its own
+	 * resize handles never resize the window */
+	return strncasecmp(tl->app_id, "qq", 2) == 0;
+}
+
 static void decoration_destroy(struct wl_listener *listener, void *data) {
 	struct toplevel *tl = wl_container_of(listener, tl, deco_destroy);
 	wl_list_remove(&tl->deco_request_mode.link);
@@ -1108,7 +1124,9 @@ static void decoration_request_mode(struct wl_listener *listener, void *data) {
 	if (tl == NULL) {
 		return;
 	}
-	tl->decoration_mode = decoration->requested_mode;
+	tl->decoration_mode = toplevel_force_undecorated(tl)
+		? WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_NONE
+		: decoration->requested_mode;
 	if (tl->xdg_toplevel->base != NULL && tl->xdg_toplevel->base->initialized &&
 			tl->decoration_mode !=
 				WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_NONE) {
@@ -1134,6 +1152,10 @@ void server_new_decoration(struct wl_listener *listener, void *data) {
 
 	/* default: let clients draw their own decorations unless they explicitly
 	 * ask for server-side (we never draw any, the top-10px zone takes over
-	 * instead). The actual configure is sent on the first commit. */
-	tl->decoration_mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+	 * instead). The actual configure is sent on the first commit.  Clients
+	 * whose own resize is known to be broken (frameless Electron, e.g.
+	 * QQ) get NONE instead so the compositor owns their frame. */
+	tl->decoration_mode = toplevel_force_undecorated(tl)
+		? WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_NONE
+		: WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
 }
