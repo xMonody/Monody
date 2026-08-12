@@ -572,18 +572,10 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 
 	if (!tl->positioned) {
 		tl->positioned = true;
-		struct wlr_box box;
-		toplevel_box(tl, &box);
-		if (box.width > 0 && box.height > 0) {
-			int x = server->cursor->x - box.width / 2;
-			int y = server->cursor->y - box.height / 2;
-			/* clamp into the work area, not the full output box: a
-			 * top-anchored bar (layer-shell exclusive zone) must never
-			 * cover a freshly mapped window, even when the cursor is
-			 * over the bar and the window is centered on it */
-			clamp_to_work_area(server, &x, &y, box.width, box.height);
-			wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
-		}
+		/* size stays exactly what the client committed; the position is
+		 * centered on the output both horizontally and vertically
+		 * (place.c) */
+		place_toplevel(server, tl);
 	}
 	/* notify status bars first, then the state/focus events */
 	tl->ipc_added = true;

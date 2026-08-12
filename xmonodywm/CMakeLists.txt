@@ -113,6 +113,7 @@ set(COMPOSITOR_SOURCES
 	src/border.c
 	src/blur.c
 	src/mask.c
+	src/place.c
 	src/layer.c
 	src/output.c
 	src/input.c

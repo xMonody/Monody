@@ -459,6 +459,10 @@ void maximized_box(struct server *server, struct wlr_output *output,
 void server_new_toplevel(struct wl_listener *listener, void *data);
 void server_new_decoration(struct wl_listener *listener, void *data);
 
+/* ---- place.c: initial window placement ----
+ * size fully client-driven, position centered on the output (screen) */
+void place_toplevel(struct server *server, struct toplevel *tl);
+
 /* ---- border.c: rounded server-side border ---- */
 bool border_buffer_no_input(struct wlr_scene_buffer *buffer,
 	double *sx, double *sy);

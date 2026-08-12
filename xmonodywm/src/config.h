@@ -53,6 +53,11 @@
 
 #define CONFIG_BLUR_ENABLED true               /* 控制透明窗口是否启用阴影 */
 
+/* 新窗口放置 (place.c): 创建时大小完全尊重客户端, 位置在屏幕上左右上下居中.
+ * 默认以整个屏幕为基准严格居中; 设为 1 时改为以工作区为基准
+ * (屏幕减去 layer-shell 状态栏的独占区), 保证新窗口不被状态栏盖住. */
+#define CONFIG_CENTER_AVOID_BARS 0
+
 #define CONFIG_MOD_MAIN (WLR_MODIFIER_SHIFT | WLR_MODIFIER_ALT) /* Shift+Alt */
 #define CONFIG_MOD_QUIT (WLR_MODIFIER_LOGO)
 
