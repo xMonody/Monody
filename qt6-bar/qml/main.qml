@@ -48,7 +48,7 @@ Window {
 
     // ---------------------------------------------------------------- content
     RowLayout {
-        height: 38                      // button-row height, matches the bar
+        height: barHeight                      // button-row height, matches the bar
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter   // centre the 40px row in the bar
@@ -59,7 +59,7 @@ Window {
         // ---- left icon: Windows-like logo, no function for now ----
         Item {
             width: 40
-            height: 38
+            height: barHeight
 
             Rectangle {                        // hover feedback only
                 anchors.fill: parent
@@ -84,7 +84,7 @@ Window {
         }
 
         // ---- gap: win icon stays two app-gap widths away from the apps ----
-        Item { width: 10; height: 38 }
+        Item { width: 10; height: barHeight }
 
         // ---- running windows (one icon per window) ----
         Repeater {
@@ -93,7 +93,7 @@ Window {
             delegate: Item {
                 id: taskItem
                 width: 40
-                height: 38
+                height: barHeight
 
                 readonly property bool focused: model.id === bar.focusedId
 
@@ -107,18 +107,18 @@ Window {
                     height: taskItem.focused ? 30 : 36
                     anchors.centerIn: parent
                     radius: 4
-                    color: taskItem.focused ? barCfgActiveBg
-                                            : (itemMouse.containsMouse ? "#26ffffff" : "transparent")
+                    color: (taskItem.focused && barCfgActiveBgEnabled) ? barCfgActiveBg
+                                                                       : (itemMouse.containsMouse ? "#26ffffff" : "transparent")
 
                     // Win11 underline pill, inside the focused background
                     Rectangle {
                         visible: taskItem.focused
-                        width: 14
-                        height: 1
-                        radius: 1
+                        width: barCfgUnderlineWidth
+                        height: barCfgUnderlineHeight
+                        radius: Math.max(barCfgUnderlineHeight / 2, 1)
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 2
+                        anchors.bottomMargin: barCfgUnderlineOffset
                         color: barCfgUnderline
                     }
                 }
@@ -130,6 +130,7 @@ Window {
                     width: 24
                     height: 24
                     anchors.centerIn: parent
+                    anchors.verticalCenterOffset: -2
                     source: "image://icons/" + encodeURIComponent(model.appId)
                     sourceSize: Qt.size(64, 64)
                     fillMode: Image.PreserveAspectFit
@@ -143,6 +144,7 @@ Window {
                     width: 24
                     height: 24
                     anchors.centerIn: parent
+                    anchors.verticalCenterOffset: -2
                     radius: 5
                     color: taskbarColor.hash(model.appId)
                     Text {
@@ -171,13 +173,13 @@ Window {
         // ---- flexible spacer: keeps the clock pinned to the far right ----
         Item {
             Layout.fillWidth: true
-            Layout.preferredHeight: 38
+            Layout.preferredHeight: barHeight
         }
 
         // ---- clock: time above date, Win11 style (no seconds) ----
         Item {
             implicitWidth: clockRow.implicitWidth + 20
-            Layout.preferredHeight: 38
+            Layout.preferredHeight: barHeight
 
             Rectangle {                        // hover feedback, same as icons
                 anchors.fill: parent

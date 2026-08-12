@@ -132,6 +132,15 @@ struct toplevel {
 	uint32_t deco_color;              /* border color the buffer was rendered with */
 	bool deco_focused;                /* whether the buffer was rendered with the focus glow */
 
+	/* whether the border/interaction box wraps the committed surface
+	 * instead of the xdg window geometry: set by the rounded-mask pass
+	 * (mask.c) when the surface extends beyond the geometry with opaque
+	 * pixels (clients like QQ's login window report a geometry smaller
+	 * than what they actually draw).  When the extra area is a
+	 * transparent drop shadow (Firefox/GTK CSD) this stays false and the
+	 * geometry - the window bounds per xdg-shell - is used. */
+	bool wrap_surface;
+
 	/* rounded-corner masked content: the client's buffer re-rendered through
 	 * an alpha mask (mask.c) into `masked`; the xdg surface's own scene
 	 * node is replaced by this buffer, so output/frame events are forwarded
@@ -421,7 +430,8 @@ void blur_finish(struct server *server);
 struct wlr_buffer *content_mask_buffer(struct server *server,
 	int width, int height);
 bool content_mask_render(struct server *server, struct wlr_surface *surface,
-	struct wlr_buffer *dst, int width, int height, float radius);
+	struct wlr_buffer *dst, int width, int height, float radius,
+	const struct wlr_box *geom, bool geom_clip, bool *margin_opaque);
 void mask_toplevel_content(struct toplevel *tl);
 void mask_toplevel_destroy(struct toplevel *tl);
 

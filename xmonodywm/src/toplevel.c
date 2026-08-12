@@ -26,23 +26,38 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_subcompositor.h>
 
-/* effective window geometry box in layout coordinates */
+/* effective window geometry box in layout coordinates.  Normally this is
+ * the xdg window geometry (the window bounds per xdg-shell, excluding drop
+ * shadows and CSD margins), which starts exactly at the scene node because
+ * the content buffer is placed at -geometry.  Some clients (Chromium/
+ * Electron frameless windows, e.g. QQ's login window) report a window
+ * geometry smaller than the opaque surface they actually commit; the mask
+ * pass detects that (mask.c: the pixels outside the geometry are opaque,
+ * not a transparent shadow) and sets wrap_surface, in which case the box
+ * wraps the committed surface instead. */
 void toplevel_box(struct toplevel *tl, struct wlr_box *box) {
 	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
 	box->x = tl->scene_tree->node.x;
 	box->y = tl->scene_tree->node.y;
+	int gx = base != NULL ? base->geometry.x : 0;
+	int gy = base != NULL ? base->geometry.y : 0;
 	int gw = base != NULL ? base->geometry.width : 0;
 	int gh = base != NULL ? base->geometry.height : 0;
 	int sw = base != NULL && base->surface != NULL
 		? base->surface->current.width : 0;
 	int sh = base != NULL && base->surface != NULL
 		? base->surface->current.height : 0;
-	/* some clients (Chromium/Electron frameless windows, e.g. QQ's login
-	 * window) report an xdg window geometry smaller than the buffer they
-	 * actually commit; the border and the interaction zones must wrap what
-	 * is visible, so take the larger of the two */
-	box->width = gw > sw ? gw : sw;
-	box->height = gh > sh ? gh : sh;
+	if (tl->wrap_surface && sw > 0 && sh > 0) {
+		/* the surface really extends beyond the geometry with opaque
+		 * pixels: the border and the interaction zones must wrap it */
+		box->x -= gx;
+		box->y -= gy;
+		box->width = sw;
+		box->height = sh;
+	} else {
+		box->width = gw;
+		box->height = gh;
+	}
 }
 
 /* output under the toplevel (its center), or the center output */
@@ -890,9 +905,30 @@ void mask_toplevel_content(struct toplevel *tl) {
 	if (buf == NULL) {
 		return;
 	}
-	if (!content_mask_render(tl->server, surface, buf, w, h, radius)) {
+	/* the geometry probe decides whether the border wraps the xdg window
+	 * geometry or the committed surface (see mask_margin_has_content) */
+	bool margin_opaque = false;
+	/* first pass without the geometry-corner clip: the margin probe must
+	 * read the surface's own alpha, and the clip is only valid once we
+	 * know the margin is a transparent shadow (not real content) */
+	if (!content_mask_render(tl->server, surface, buf, w, h, radius,
+			&base->geometry, false, &margin_opaque)) {
 		wlr_buffer_drop(buf);
 		return;
+	}
+	tl->wrap_surface = margin_opaque;
+	/* second pass, only for windows whose border trusts the geometry but
+	 * whose surface is larger (GTK CSD shadows, e.g. Firefox): round the
+	 * window-geometry corners too, so the content's sharp corners are cut
+	 * to the border ring's arc (the shadow margin stays intact) */
+	if (!tl->wrap_surface &&
+			(base->geometry.x > 0 || base->geometry.y > 0 ||
+			base->geometry.width < w || base->geometry.height < h)) {
+		if (!content_mask_render(tl->server, surface, buf, w, h, radius,
+				&base->geometry, true, NULL)) {
+			wlr_buffer_drop(buf);
+			return;
+		}
 	}
 	/* the scene locks the buffer; drop our reference */
 	wlr_scene_buffer_set_buffer(tl->masked, buf);

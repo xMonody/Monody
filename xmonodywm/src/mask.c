@@ -18,6 +18,12 @@
  * buffer's scale is handled by sampling the texture with normalized
  * coordinates; 90-degree transformed buffers are not supported (the
  * compositor never receives them in practice).
+ *
+ * Windows whose surface is larger than the xdg window geometry (GTK CSD
+ * drop shadows, e.g. Firefox) get an extra pass: the window-geometry
+ * corners are cut to the border ring's arc, so the content's own corners
+ * are rounded too (the surface-level rounding alone only cuts the outer
+ * shadow corners).  The shadow margin itself is preserved.
  */
 
 #include "server.h"
@@ -36,6 +42,7 @@
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/util/box.h>
 #include <wlr/util/log.h>
 
 /* ------------------------------------------------------------------ */
@@ -53,6 +60,8 @@ static const char *mask_fragment_src =
 	"uniform sampler2D u_tex;\n"
 	"uniform vec2 u_size;\n"
 	"uniform float u_radius;\n"
+	"uniform vec4 u_geom;\n"
+	"uniform float u_geom_clip;\n"
 	"/* rounded-rect SDF: negative inside, positive outside */\n"
 	"float sdRoundBox(vec2 p, vec2 b, float r) {\n"
 	"	vec2 q = abs(p) - b + r;\n"
@@ -62,6 +71,21 @@ static const char *mask_fragment_src =
 	"	vec2 p = gl_FragCoord.xy - u_size * 0.5;\n"
 	"	float d = sdRoundBox(p, u_size * 0.5, u_radius);\n"
 	"	float mask = 1.0 - smoothstep(0.0, 1.0, d);\n"
+	"	/* windows whose surface is larger than the window geometry (GTK\n"
+	"	 * CSD drop shadows, e.g. Firefox): the surface-level rounding above\n"
+	"	 * only cuts the outer (shadow) corners, so the content's own\n"
+	"	 * corners would stay sharp.  Clip the window-geometry corners to\n"
+	"	 * the same arc as the border ring: the corner triangles of the\n"
+	"	 * geometry box are cut away, the drop-shadow margin outside the\n"
+	"	 * box is kept (max(geom_round, outside)) . */\n"
+	"	if (u_geom_clip > 0.5) {\n"
+	"		vec2 gc = u_geom.xy + u_geom.zw * 0.5;\n"
+	"		float dg = sdRoundBox(gl_FragCoord.xy - gc, u_geom.zw * 0.5, u_radius);\n"
+	"		float geom_round = 1.0 - smoothstep(0.0, 1.0, dg);\n"
+	"		float db = sdRoundBox(gl_FragCoord.xy - gc, u_geom.zw * 0.5, 0.0);\n"
+	"		float in_box = step(0.0, -db);\n"
+	"		mask *= max(geom_round, 1.0 - in_box);\n"
+	"	}\n"
 	"	/* texture sampled at normalized coords; output premultiplied like\n"
 	"	 * the rest of the scene (GL_ONE, GL_ONE_MINUS_SRC_ALPHA) */\n"
 	"	gl_FragColor = texture2D(u_tex, gl_FragCoord.xy / u_size) * mask;\n"
@@ -139,10 +163,97 @@ struct wlr_buffer *content_mask_buffer(struct server *server,
 		mask_format());
 }
 
+/* decide whether the surface really extends beyond the xdg window geometry
+ * with opaque pixels (then the border must wrap the surface) or whether the
+ * extra area is a transparent drop shadow (then it must wrap the geometry).
+ * Called right after the rounded mask has been rendered, with the mask
+ * buffer's FBO still bound: the mask covers the whole surface, so its alpha
+ * is the surface's alpha outside the (corner-only) rounded clip.
+ *
+ * Samples a few pixels just inside each surface edge where the surface
+ * extends past the geometry; a drop shadow is (nearly) transparent there,
+ * real content is opaque.  GL y=0 is the surface's top row, which matches
+ * the mask pass (gl_FragCoord.xy / u_size).  Returns true when at least one
+ * sampled pixel has alpha > 0.25. */
+static bool mask_margin_has_content(const struct wlr_box *geom,
+		int width, int height) {
+	if (geom == NULL || wlr_box_empty(geom)) {
+		return false; /* geometry unspecified: treat the surface as the window */
+	}
+	int gx = geom->x, gy = geom->y;
+	int gw = geom->width, gh = geom->height;
+	if (gx <= 0 && gy <= 0 && gx + gw >= width && gy + gh >= height) {
+		return false; /* no margin: the geometry covers the whole surface */
+	}
+	/* distance from the surface edge to sample: 2px inside, or the middle
+	 * of a thin band (never the row next to the geometry, where a drop
+	 * shadow is darkest) */
+	int top_t = gy;                 /* top band thickness */
+	int bot_t = height - gy - gh;   /* bottom band thickness */
+	int lef_t = gx;                 /* left band thickness */
+	int rig_t = width - gx - gw;    /* right band thickness */
+	int top_d = top_t >= 4 ? 2 : top_t / 2;
+	int bot_d = bot_t >= 4 ? 2 : bot_t / 2;
+	int lef_d = lef_t >= 4 ? 2 : lef_t / 2;
+	int rig_d = rig_t >= 4 ? 2 : rig_t / 2;
+	/* one sample line per side, spread along the middle of the edge */
+	struct { int x, y; } samples[16];
+	int n = 0;
+	if (top_t > 0) {               /* top band: rows [0, gy) */
+		for (int i = 1; i < 5 && n < 16; i++) {
+			samples[n].x = width * i / 5;
+			samples[n].y = top_d;
+			n++;
+		}
+	}
+	if (bot_t > 0) {               /* bottom band: rows [gy+gh, height) */
+		for (int i = 1; i < 5 && n < 16; i++) {
+			samples[n].x = width * i / 5;
+			samples[n].y = height - 1 - bot_d;
+			n++;
+		}
+	}
+	if (lef_t > 0) {               /* left band: columns [0, gx) */
+		for (int i = 1; i < 5 && n < 16; i++) {
+			samples[n].x = lef_d;
+			samples[n].y = height * i / 5;
+			n++;
+		}
+	}
+	if (rig_t > 0) {               /* right band: columns [gx+gw, width) */
+		for (int i = 1; i < 5 && n < 16; i++) {
+			samples[n].x = width - 1 - rig_d;
+			samples[n].y = height * i / 5;
+			n++;
+		}
+	}
+	for (int i = 0; i < n; i++) {
+		unsigned char px[4];
+		glReadPixels(samples[i].x, samples[i].y, 1, 1, GL_RGBA,
+			GL_UNSIGNED_BYTE, px);
+		if (px[3] > 64) {             /* alpha > 0.25: real content */
+			return true;
+		}
+	}
+	return false;
+}
+
 /* render the surface's current buffer into `dst` with a rounded-corner
- * alpha mask of `radius`; radius 0 renders the content unclipped */
+ * alpha mask of `radius`; radius 0 renders the content unclipped.  When
+ * `geom` is non-NULL, `*margin_opaque` reports whether the surface has
+ * opaque pixels outside that geometry box (see mask_margin_has_content).
+ * `geom_clip` additionally cuts the window-geometry corners (sharp CSD
+ * content corners under a drop-shadow margin); it implies a non-NULL
+ * `geom`. */
 bool content_mask_render(struct server *server, struct wlr_surface *surface,
-		struct wlr_buffer *dst, int width, int height, float radius) {
+		struct wlr_buffer *dst, int width, int height, float radius,
+		const struct wlr_box *geom, bool geom_clip, bool *margin_opaque) {
+	if (margin_opaque != NULL) {
+		*margin_opaque = false;
+	}
+	if (geom == NULL) {
+		geom_clip = false;
+	}
 	struct wlr_texture *tex = wlr_surface_get_texture(surface);
 	if (tex == NULL) {
 		return false;
@@ -207,6 +318,13 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 		glUniform2f(glGetUniformLocation(program, "u_size"),
 			(float)width, (float)height);
 		glUniform1f(glGetUniformLocation(program, "u_radius"), radius);
+		glUniform4f(glGetUniformLocation(program, "u_geom"),
+			geom != NULL ? (float)geom->x : 0.0f,
+			geom != NULL ? (float)geom->y : 0.0f,
+			geom != NULL ? (float)geom->width : (float)width,
+			geom != NULL ? (float)geom->height : (float)height);
+		glUniform1f(glGetUniformLocation(program, "u_geom_clip"),
+			geom_clip ? 1.0f : 0.0f);
 
 		glBindTexture(GL_TEXTURE_2D, attribs.tex);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -226,6 +344,37 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 		glDisableVertexAttribArray((GLuint)loc);
 		glDeleteBuffers(1, &vbo);
 		ok = true;
+		/* the FBO is still bound: probe the margin band for opaque content
+		 * (see mask_margin_has_content) */
+		if (geom != NULL && margin_opaque != NULL) {
+			*margin_opaque = mask_margin_has_content(geom, width, height);
+		}
+		/* debug: confirm the geometry-corner clip cut the four corners
+		 * (1px inside the corner, deep in the cut triangle) */
+		if (geom_clip && geom != NULL) {
+			unsigned char c[4][4];
+			int px[4], py[4];
+			px[0] = geom->x + 1;            py[0] = geom->y + 1;
+			px[1] = geom->x + geom->width - 2;
+			py[1] = geom->y + 1;
+			px[2] = geom->x + 1;
+			py[2] = geom->y + geom->height - 2;
+			px[3] = geom->x + geom->width - 2;
+			py[3] = geom->y + geom->height - 2;
+			for (int i = 0; i < 4; i++) {
+				if (px[i] >= 0 && py[i] >= 0 && px[i] < width &&
+						py[i] < height) {
+					glReadPixels(px[i], py[i], 1, 1, GL_RGBA,
+						GL_UNSIGNED_BYTE, c[i]);
+				} else {
+					c[i][3] = 255; /* outside the buffer: not cut */
+				}
+			}
+			wlr_log(WLR_DEBUG, "mask: geom-clip geom=%d,%d %dx%d "
+				"corners TL=%u TR=%u BL=%u BR=%u",
+				geom->x, geom->y, geom->width, geom->height,
+				c[0][3], c[1][3], c[2][3], c[3][3]);
+		}
 	}
 
 	/* restore GL state */

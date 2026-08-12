@@ -12,7 +12,7 @@
 #include "LayerShellQt/window.h"
 
 // Must match `height` in qml/main.qml (also used as the exclusive zone).
-constexpr int BAR_HEIGHT = 38;
+// Height comes from barCfg::height so the bar and its exclusive zone stay in sync.
 
 // The xmonodywm compositor puts its IPC socket in $XDG_RUNTIME_DIR and only
 // falls back to /tmp when that variable is unset. Mirror it so the bar finds
@@ -54,7 +54,7 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine engine;
     engine.addImageProvider(QStringLiteral("icons"), new IconProvider);
     engine.rootContext()->setContextProperty(QStringLiteral("bar"), &controller);
-    engine.rootContext()->setContextProperty(QStringLiteral("barHeight"), BAR_HEIGHT);
+    engine.rootContext()->setContextProperty(QStringLiteral("barHeight"), barCfg::height);
     engine.rootContext()->setContextProperty(QStringLiteral("desktopApps"), &desktopApps);
 
     // Appearance settings from BarConfig.h (see also the anchor block below)
@@ -63,7 +63,11 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgRadius"), barCfg::radius);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgOpacity"), barCfg::opacity);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgBarColor"), barCfg::barColor);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBgEnabled"), barCfg::activeBgEnabled);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBg"), barCfg::activeBg);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderlineWidth"), barCfg::underlineWidth);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderlineHeight"), barCfg::underlineHeight);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderlineOffset"), barCfg::underlineOffset);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderline"), barCfg::underlineColor);
     engine.load(QUrl(QStringLiteral("qrc:/qml/main.qml")));
     if (engine.rootObjects().isEmpty())
@@ -83,7 +87,7 @@ int main(int argc, char *argv[])
             anchors |= barCfg::atTop ? LayerShellQt::Window::AnchorTop
                                      : LayerShellQt::Window::AnchorBottom;
             shell->setAnchors(anchors);
-            shell->setExclusiveZone(BAR_HEIGHT);
+            shell->setExclusiveZone(barCfg::height);
             shell->setMargins(QMargins(0, 0, 0, 0));
             shell->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
         }
