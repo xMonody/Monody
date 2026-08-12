@@ -10,6 +10,7 @@
 
 #include "ipc.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -522,6 +523,26 @@ void focus_toplevel(struct server *server, struct toplevel *tl) {
 	ime_set_focus(server, tl->xdg_toplevel->base->surface);
 	/* notify status bars that the focus changed */
 	ipc_send_window_event(server, "window_focus", tl);
+}
+
+/* xdg-activation-v1 request_activate: the surface's client asked for focus
+ * with a valid activation token.  Focus (and restore) the matching toplevel. */
+void xdg_activation_request_activate(struct wl_listener *listener, void *data) {
+	struct server *server = wl_container_of(listener, server,
+		activation_request_activate);
+	struct wlr_xdg_activation_v1_request_activate_event *event = data;
+	struct toplevel *tl;
+	wl_list_for_each(tl, &server->toplevels, link) {
+		if (tl->xdg_toplevel->base == NULL ||
+				tl->xdg_toplevel->base->surface != event->surface) {
+			continue;
+		}
+		if (tl->minimized) {
+			set_minimized(server, tl, false);
+		}
+		focus_toplevel(server, tl);
+		return;
+	}
 }
 
 void update_toplevel_output(struct server *server, struct toplevel *tl) {
@@ -1211,7 +1232,24 @@ static void foreign_toplevel_destroy(struct wl_listener *listener, void *data) {
 
 /* the xdg surface's own scene node is replaced by the masked buffer, so
  * output enter/leave, presentation feedback and frame done must be
- * forwarded to the client surface from tl->masked */
+ * forwarded to the client surface from tl->masked.  The masked buffer is a
+ * plain wlr_scene_buffer (not a wlr_scene_surface), so the fractional-scale
+ * notification that wlr_scene_surface would do automatically is done here
+ * from the buffer's primary output. */
+static void mask_outputs_update(struct wl_listener *listener, void *data) {
+	struct toplevel *tl = wl_container_of(listener, tl, mask_outputs_update);
+	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
+	if (base == NULL || base->surface == NULL || tl->masked == NULL) {
+		return;
+	}
+	if (tl->masked->primary_output == NULL) {
+		return;
+	}
+	double scale = tl->masked->primary_output->output->scale;
+	wlr_fractional_scale_v1_notify_scale(base->surface, scale);
+	wlr_surface_set_preferred_buffer_scale(base->surface, ceil(scale));
+}
+
 static void mask_output_enter(struct wl_listener *listener, void *data) {
 	struct toplevel *tl = wl_container_of(listener, tl, mask_enter);
 	struct wlr_scene_output *scene_output = data;
@@ -1359,6 +1397,7 @@ void mask_toplevel_content(struct toplevel *tl) {
  * before the deco tree (and thus tl->masked) is destroyed */
 void mask_toplevel_destroy(struct toplevel *tl) {
 	if (tl->masked != NULL) {
+		wl_list_remove(&tl->mask_outputs_update.link);
 		wl_list_remove(&tl->mask_enter.link);
 		wl_list_remove(&tl->mask_leave.link);
 		wl_list_remove(&tl->mask_sample.link);
@@ -1446,6 +1485,8 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 	wl_list_init(&tl->popups);
 	/* the xdg surface's own scene node is gone: forward output/frame
 	 * events to the client surface from the masked buffer */
+	tl->mask_outputs_update.notify = mask_outputs_update;
+	wl_signal_add(&tl->masked->events.outputs_update, &tl->mask_outputs_update);
 	tl->mask_enter.notify = mask_output_enter;
 	wl_signal_add(&tl->masked->events.output_enter, &tl->mask_enter);
 	tl->mask_leave.notify = mask_output_leave;

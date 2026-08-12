@@ -59,6 +59,8 @@ set(PROTOCOLS
 	text-input-unstable-v3
 	cursor-shape-v1
 	tablet-unstable-v2
+	xdg-activation-v1
+	wp_fractional_scale_v1
 )
 
 set(PROTOCOL_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/protocol)

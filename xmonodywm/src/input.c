@@ -52,29 +52,6 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 		seat_request_set_cursor);
 	struct wlr_seat_pointer_request_set_cursor_event *event = data;
 	if (event->seat_client == server->seat->pointer_state.focused_client) {
-		/* Over layer-shell surfaces (e.g. the Qt taskbar) keep the
-		 * compositor's own xcursor instead of the client's: Qt's client
-		 * cursor is rendered at a different size on scaled outputs
-		 * (fractional scale), which makes the pointer look bigger over
-		 * the bar. The bar only ever uses the default arrow, so nothing
-		 * is lost. */
-		struct wlr_surface *focused =
-			server->seat->pointer_state.focused_surface;
-		struct layer_surface *ls;
-		bool over_layer = false;
-		if (focused != NULL) {
-			wl_list_for_each(ls, &server->layer_surfaces, link) {
-				if (ls->scene_layer != NULL &&
-						ls->scene_layer->layer_surface != NULL &&
-						ls->scene_layer->layer_surface->surface == focused) {
-					over_layer = true;
-					break;
-				}
-			}
-		}
-		if (over_layer) {
-			return;
-		}
 		/* a cursor surface supersedes any previously set cursor shape
 		 * (clients mixing both protocols: the last request wins) */
 		server->client_cursor_shape = 0;
@@ -144,27 +121,8 @@ void seat_request_set_shape(struct wl_listener *listener, void *data) {
 	if (event->seat_client != server->seat->pointer_state.focused_client) {
 		return;
 	}
-	/* over layer-shell surfaces (e.g. the Qt taskbar) keep the
-	 * compositor's own cursor instead of the client's: it is always
-	 * rendered at the output's (fractional) scale, so it never needs
-	 * rescaling when the pointer crosses output boundaries */
 	struct wlr_surface *focused =
 		server->seat->pointer_state.focused_surface;
-	struct layer_surface *ls;
-	bool over_layer = false;
-	if (focused != NULL) {
-		wl_list_for_each(ls, &server->layer_surfaces, link) {
-			if (ls->scene_layer != NULL &&
-					ls->scene_layer->layer_surface != NULL &&
-					ls->scene_layer->layer_surface->surface == focused) {
-				over_layer = true;
-				break;
-			}
-		}
-	}
-	if (over_layer) {
-		return;
-	}
 	/* A client that draws its own decorations but never negotiates
 	 * xdg-decoration (Firefox, Chromium) is treated as an undecorated
 	 * window here: the compositor owns its frame, so it provides the

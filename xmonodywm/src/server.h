@@ -23,6 +23,7 @@
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_input_method_v2.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output_layout.h>
@@ -31,6 +32,7 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_text_input_v3.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 
@@ -183,6 +185,7 @@ struct toplevel {
 	struct wlr_scene_buffer *masked;
 	struct wl_list subsurfaces;       /* struct mask_subsurface.link */
 	struct wl_list popups;            /* struct mask_popup.link */
+	struct wl_listener mask_outputs_update;
 	struct wl_listener mask_enter;
 	struct wl_listener mask_leave;
 	struct wl_listener mask_sample;
@@ -296,6 +299,14 @@ struct server {
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *xcursor_manager;
 	struct wl_list keyboards; /* struct keyboard.link (per attached device) */
+
+	/* xdg-activation-v1: client-driven focus/activation requests (focus
+	 * stealing prevention); the request_activate signal is handled by
+	 * toplevel.c.  wp_fractional_scale_v1 is the matching global for
+	 * fractional surface scaling. */
+	struct wlr_xdg_activation_v1 *activation;
+	struct wl_listener activation_request_activate;
+	struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
 
 	/* cursor-shape-v1: lets clients pick a cursor shape which the compositor
 	 * renders with its own theme (so the size always matches the output
@@ -457,6 +468,7 @@ void restore_maximized_toplevel(struct toplevel *tl);
 void set_minimized(struct server *server, struct toplevel *tl,
 	bool minimized);
 void focus_toplevel(struct server *server, struct toplevel *tl);
+void xdg_activation_request_activate(struct wl_listener *listener, void *data);
 void update_toplevel_output(struct server *server, struct toplevel *tl);
 void arrange_toplevels_work_area(struct server *server,
 	struct wlr_output *output);

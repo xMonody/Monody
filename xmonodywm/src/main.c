@@ -287,6 +287,23 @@ int main(int argc, char *argv[]) {
 	server.cursor_shape_manager =
 		wlr_cursor_shape_manager_v1_create(server.display, 1);
 
+	/* xdg-activation-v1: clients can request focus through an activation
+	 * token; the compositor focuses the matching toplevel on request */
+	server.activation = wlr_xdg_activation_v1_create(server.display);
+	if (server.activation == NULL) {
+		wlr_log(WLR_ERROR, "failed to create xdg-activation-v1 global");
+	}
+
+	/* wp_fractional_scale_v1: surfaces are told the output's exact
+	 * fractional scale; wlroots scene surfaces (layer-shell, subsurfaces,
+	 * cursor) handle it automatically, toplevels are notified by
+	 * toplevel.c through their masked scene buffer */
+	server.fractional_scale_manager =
+		wlr_fractional_scale_manager_v1_create(server.display, 1);
+	if (server.fractional_scale_manager == NULL) {
+		wlr_log(WLR_ERROR, "failed to create fractional-scale-v1 global");
+	}
+
 	/* ---- input method (fcitx5 / ibus) ---- */
 	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_manager =
 		wlr_virtual_keyboard_manager_v1_create(server.display);
@@ -336,6 +353,11 @@ int main(int argc, char *argv[]) {
 	wl_signal_add(&server.seat->events.request_set_cursor, &server.seat_request_set_cursor);
 	server.cursor_shape_set_shape.notify = seat_request_set_shape;
 	wl_signal_add(&server.cursor_shape_manager->events.request_set_shape, &server.cursor_shape_set_shape);
+	if (server.activation != NULL) {
+		server.activation_request_activate.notify = xdg_activation_request_activate;
+		wl_signal_add(&server.activation->events.request_activate,
+			&server.activation_request_activate);
+	}
 	server.seat_request_set_selection.notify = seat_request_set_selection;
 	wl_signal_add(&server.seat->events.request_set_selection, &server.seat_request_set_selection);
 	server.seat_request_set_primary_selection.notify = seat_request_set_primary_selection;
@@ -408,6 +430,9 @@ int main(int argc, char *argv[]) {
 	wl_list_remove(&server.cursor_frame.link);
 	wl_list_remove(&server.seat_request_set_cursor.link);
 	wl_list_remove(&server.cursor_shape_set_shape.link);
+	if (server.activation != NULL) {
+		wl_list_remove(&server.activation_request_activate.link);
+	}
 	wl_list_remove(&server.seat_request_set_selection.link);
 	wl_list_remove(&server.seat_request_set_primary_selection.link);
 	wl_list_remove(&server.seat_request_start_drag.link);

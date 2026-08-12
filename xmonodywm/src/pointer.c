@@ -414,8 +414,8 @@ static void set_cursor_override(struct server *server, const char *name) {
  * rendered cursor shape (cursor-shape-v1), its own cursor surface
  * (wl_pointer.set_cursor), or the default arrow.  A shape wins over a
  * surface: the compositor always renders it at the correct output scale,
- * while a client-drawn surface may have been sized by a guessing client
- * (the 1.75x fractional-scale mismatch this file fixes).  If a compositor
+ * while a client-drawn surface may be sized by a client that does not
+ * use wp_fractional_scale_v1.  If a compositor
  * cursor override (title strip / resize edge) is active it wins over
  * everything else. */
 void reapply_client_cursor(struct server *server) {
