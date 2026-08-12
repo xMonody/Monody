@@ -309,6 +309,11 @@ struct server {
 	bool moving;                    /* a window move is in progress */
 	struct toplevel *move_toplevel;
 	double grab_x, grab_y; /* cursor offset from the window origin */
+	/* the cursor position when the move started: used to re-anchor the
+	 * grab after a maximized window is restored mid-drag (the client's
+	 * own title bar sends xdg_toplevel.move on a plain click, so the
+	 * restore is deferred until the user actually drags) */
+	double move_ref_x, move_ref_y;
 	double press_x, press_y;
 	bool dragged;       /* moved beyond CONFIG_DRAG_THRESHOLD during a press */
 	enum zone_action zone_action; /* armed double-click action on the title

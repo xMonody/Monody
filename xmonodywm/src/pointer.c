@@ -97,6 +97,8 @@ void begin_move(struct server *server, struct toplevel *tl,
 	}
 	server->moving = true;
 	server->move_toplevel = tl;
+	server->move_ref_x = ref_x;
+	server->move_ref_y = ref_y;
 	server->grab_x = ref_x - tl->scene_tree->node.x;
 	server->grab_y = ref_y - tl->scene_tree->node.y;
 }
@@ -193,6 +195,18 @@ static void move_toplevel_to(struct server *server, double lx, double ly) {
 	struct toplevel *tl = server->move_toplevel;
 	if (tl == NULL) {
 		return;
+	}
+	/* a maximized window whose move came from the client (xdg_toplevel.
+	 * move - e.g. QQ's own title bar sends it on a plain click, not just
+	 * a drag): defer the restore to the first real motion, so a mere
+	 * click never un-maximizes the window.  Only here (not in
+	 * request_move) can a click be told apart from a drag. */
+	if (tl->xdg_toplevel->current.maximized) {
+		restore_maximized_toplevel(tl);
+		/* re-anchor the grab on the restored window's actual box (the
+		 * maximized geometry the grab was anchored to is gone) */
+		server->grab_x = server->move_ref_x - tl->scene_tree->node.x;
+		server->grab_y = server->move_ref_y - tl->scene_tree->node.y;
 	}
 	/* the cursor must stay above the status bar while dragging; the
 	 * window follows it with no bottom limit (it may slide past the bar

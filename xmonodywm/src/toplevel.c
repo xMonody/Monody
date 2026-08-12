@@ -307,15 +307,42 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 
 void set_maximized(struct server *server, struct toplevel *tl,
 		bool maximized) {
-	if (tl->xdg_toplevel->base == NULL ||
-			tl->xdg_toplevel->current.maximized == maximized) {
+	if (tl->xdg_toplevel->base == NULL) {
+		return;
+	}
+	if (maximized && tl->xdg_toplevel->current.maximized) {
+		/* already maximized: re-fit the window to the maximized geometry.
+		 * A maximized window can drift off it (e.g. a client-drag of a
+		 * maximized window that never got restored), and the client's own
+		 * maximize button then sends a set_maximized that would otherwise
+		 * be a silent no-op - the window stays stuck.  Re-asserting the
+		 * box makes a maximize request always respond. */
+		struct wlr_output *output = toplevel_output(server, tl);
+		if (output != NULL) {
+			struct wlr_box box;
+			maximized_box(server, output, &box);
+			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, box.width,
+				box.height);
+			wlr_scene_node_set_position(&tl->scene_tree->node, box.x, box.y);
+		}
+		return;
+	}
+	if (tl->xdg_toplevel->current.maximized == maximized) {
 		return;
 	}
 	if (maximized) {
 		/* remember the floating geometry so dragging the title bar of the
-		 * maximized window can restore it (Windows behavior) */
-		toplevel_box(tl, &tl->restore_box);
-		tl->has_restore_box = true;
+		 * maximized window can restore it (Windows behavior).  Only capture
+		 * it on the genuine floating -> maximized transition: clients like
+		 * QQ re-assert set_maximized repeatedly (before the first request
+		 * is even acked, when current.maximized is still false), and
+		 * re-saving then would overwrite the floating geometry with the
+		 * already-maximized box. */
+		if (!tl->xdg_toplevel->current.maximized &&
+				!tl->has_restore_box) {
+			toplevel_box(tl, &tl->restore_box);
+			tl->has_restore_box = true;
+		}
 
 		struct wlr_output *output = toplevel_output(server, tl);
 		if (output != NULL) {
@@ -328,8 +355,25 @@ void set_maximized(struct server *server, struct toplevel *tl,
 			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, 0, 0);
 		}
 	} else {
-		/* 0x0 lets the client pick its own size again */
-		wlr_xdg_toplevel_set_size(tl->xdg_toplevel, 0, 0);
+		/* restore to the geometry saved when the window was maximized
+		 * (position + size), so the client's own restore button brings
+		 * the window back exactly where it was.  Falling back to 0x0
+		 * only when no floating geometry was ever saved. */
+		if (tl->has_restore_box && tl->restore_box.width > 0) {
+			int x = tl->restore_box.x;
+			int y = tl->restore_box.y;
+			/* the work area may have shrunk since the window was
+			 * maximized (a bar appeared): clamp the restore into the work
+			 * area so the window never lands back underneath the bar */
+			clamp_to_work_area(server, &x, &y, tl->restore_box.width,
+				tl->restore_box.height);
+			wlr_xdg_toplevel_set_size(tl->xdg_toplevel,
+				tl->restore_box.width, tl->restore_box.height);
+			wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
+		} else {
+			/* 0x0 lets the client pick its own size again */
+			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, 0, 0);
+		}
 	}
 	wlr_xdg_toplevel_set_maximized(tl->xdg_toplevel, maximized);
 	if (tl->fthandle != NULL) {
@@ -645,7 +689,13 @@ static void xdg_toplevel_request_maximize(struct wl_listener *listener,
 			!tl->xdg_toplevel->base->initialized) {
 		return;
 	}
-	set_maximized(tl->server, tl, true);
+	/* honor the client's requested value (wlroots stores it in
+	 * requested.maximized): a client's own maximize button sends
+	 * set_maximized(true) to maximize and set_maximized(false) to restore.
+	 * Ignoring the value and always maximizing made the second press a
+	 * silent no-op - the window could never be restored from its own
+	 * button. */
+	set_maximized(tl->server, tl, tl->xdg_toplevel->requested.maximized);
 }
 
 static void xdg_toplevel_request_minimize(struct wl_listener *listener,
@@ -673,6 +723,11 @@ static void xdg_toplevel_request_move(struct wl_listener *listener, void *data) 
 			!tl->xdg_toplevel->base->surface->mapped) {
 		return;
 	}
+	/* a maximized window is NOT restored here: clients like QQ send
+	 * xdg_toplevel.move on a plain title-bar click, which would restore
+	 * the window without any drag.  move_toplevel_to() restores it on the
+	 * first real motion instead, so only an actual drag un-maximizes
+	 * (Windows behavior) while a mere click does nothing. */
 	begin_move(server, tl, server->cursor->x, server->cursor->y);
 	focus_toplevel(server, tl);
 }
