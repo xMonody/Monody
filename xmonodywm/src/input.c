@@ -110,6 +110,29 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 	}
 }
 
+/* the toplevel whose surface (or whose client's surface) the pointer is
+ * over, or NULL.  seat_request_set_shape() uses it to decide whether the
+ * client's own window-resize shapes should be suppressed (clients that
+ * never negotiate xdg-decoration, e.g. Firefox, draw their own CSD frame
+ * but are treated as undecorated here, so the compositor owns the resize). */
+static struct toplevel *toplevel_for_surface(struct server *server,
+		struct wlr_surface *surface) {
+	if (surface == NULL) {
+		return NULL;
+	}
+	struct toplevel *tl;
+	wl_list_for_each(tl, &server->toplevels, link) {
+		if (tl->xdg_toplevel->base != NULL &&
+				tl->xdg_toplevel->base->surface != NULL &&
+				(tl->xdg_toplevel->base->surface == surface ||
+				 tl->xdg_toplevel->base->surface->resource->client ==
+					surface->resource->client)) {
+			return tl;
+		}
+	}
+	return NULL;
+}
+
 void seat_request_set_shape(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server,
 		cursor_shape_set_shape);
@@ -140,6 +163,29 @@ void seat_request_set_shape(struct wl_listener *listener, void *data) {
 		}
 	}
 	if (over_layer) {
+		return;
+	}
+	/* A client that draws its own decorations but never negotiates
+	 * xdg-decoration (Firefox, Chromium) is treated as an undecorated
+	 * window here: the compositor owns its frame, so it provides the
+	 * resize edges and the matching resize cursor.  The client's own
+	 * directional window-resize shapes (e-resize, s-resize, ...) then
+	 * fight the compositor's cursor just outside the compositor's edge
+	 * zone - the "two resize cursors" seen around Firefox.  Those client
+	 * shapes cannot resize the window anyway (the compositor grabs the
+	 * presses at the edge), so ignore them: the compositor's own resize
+	 * cursor stays the only one.  Web-content cursors (ew-resize
+	 * splitters, text, pointer, ...) are unaffected. */
+	struct toplevel *tl = toplevel_for_surface(server, focused);
+	if (tl != NULL &&
+			tl->decoration_mode !=
+				WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE &&
+			event->shape >= WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_E_RESIZE &&
+			event->shape <= WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_W_RESIZE) {
+		wlr_log(WLR_DEBUG, "cursor: ignore %s resize shape from %s "
+			"(compositor owns the frame)",
+			wlr_cursor_shape_v1_name(event->shape),
+			tl->app_id ? tl->app_id : "?");
 		return;
 	}
 	/* remember the shape so pointer.c can restore it when the compositor
