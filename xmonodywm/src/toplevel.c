@@ -290,6 +290,7 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 			tl->xdg_toplevel->current.fullscreen == fullscreen) {
 		return;
 	}
+	tl->user_moved = true; /* fullscreen state: stop auto-centering */
 	tl->fullscreen = fullscreen;
 	if (fullscreen) {
 		/* remember the floating geometry so it can be restored later */
@@ -359,6 +360,7 @@ void set_maximized(struct server *server, struct toplevel *tl,
 	if (tl->xdg_toplevel->current.maximized == maximized) {
 		return;
 	}
+	tl->user_moved = true; /* maximize/restore state: stop auto-centering */
 	if (maximized) {
 		/* remember the floating geometry so dragging the title bar of the
 		 * maximized window can restore it (Windows behavior).  Only capture
@@ -418,6 +420,7 @@ void restore_maximized_toplevel(struct toplevel *tl) {
 			!tl->xdg_toplevel->current.maximized) {
 		return;
 	}
+	tl->user_moved = true; /* drag-restore: stop auto-centering */
 	if (tl->has_restore_box && tl->restore_box.width > 0) {
 		int x = tl->restore_box.x;
 		int y = tl->restore_box.y;
@@ -702,6 +705,25 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 	blur_toplevel_commit(tl);
 	/* rounded-corner masked content tracks the latest committed buffer */
 	mask_toplevel_content(tl);
+	/* keep a fresh window centered until the user interacts with it:
+	 * Electron windows (QQ) often map with a small placeholder surface
+	 * and only commit their real size on a later frame, so re-center
+	 * whenever the surface size changes (place.c).  User interactions
+	 * (move / resize / maximize / fullscreen) set user_moved and stop
+	 * this, and the window then stays where the user puts it. */
+	if (!tl->user_moved && !tl->minimized &&
+			!tl->xdg_toplevel->current.maximized && !tl->fullscreen &&
+			base != NULL && base->surface != NULL) {
+		struct wlr_surface *s = base->surface;
+		if (!tl->placed || s->current.width != tl->placed_w ||
+				s->current.height != tl->placed_h) {
+			if (place_toplevel(tl->server, tl)) {
+				tl->placed = true;
+				tl->placed_w = s->current.width;
+				tl->placed_h = s->current.height;
+			}
+		}
+	}
 	update_toplevel_decoration(tl);
 	update_cursor_style(tl->server);
 }

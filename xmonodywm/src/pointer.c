@@ -107,6 +107,9 @@ void begin_move(struct server *server, struct toplevel *tl,
 	}
 	server->moving = true;
 	server->move_toplevel = tl;
+	if (tl != NULL) {
+		tl->user_moved = true; /* user move: stop auto-centering */
+	}
 	server->move_ref_x = ref_x;
 	server->move_ref_y = ref_y;
 	server->grab_x = ref_x - tl->scene_tree->node.x;
@@ -540,6 +543,7 @@ static void begin_resize(struct server *server, struct toplevel *tl,
 	}
 	server->resizing = true;
 	server->resize_toplevel = tl;
+	tl->user_moved = true; /* user resize: stop auto-centering */
 	server->resize_edges = edges;
 	server->press_x = server->cursor->x;
 	server->press_y = server->cursor->y;

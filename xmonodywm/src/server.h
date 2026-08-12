@@ -204,6 +204,14 @@ struct toplevel {
 
 	bool minimized;
 	bool positioned; /* initial position has been assigned */
+	/* auto-centering (place.c): a fresh window is re-centered whenever its
+	 * surface size changes, until the user interacts with it (move /
+	 * resize / maximize / fullscreen set user_moved and stop it).  Electron
+	 * windows (QQ) often map with a small placeholder surface and only
+	 * commit the real size on a later frame. */
+	bool user_moved;
+	bool placed;   /* centered placement has run; placed_w/h = size used */
+	int placed_w, placed_h;
 
 	/* geometry to restore when un-maximizing by dragging (Windows style) */
 	struct wlr_box restore_box;
@@ -461,7 +469,7 @@ void server_new_decoration(struct wl_listener *listener, void *data);
 
 /* ---- place.c: initial window placement ----
  * size fully client-driven, position centered on the output (screen) */
-void place_toplevel(struct server *server, struct toplevel *tl);
+bool place_toplevel(struct server *server, struct toplevel *tl);
 
 /* ---- border.c: rounded server-side border ---- */
 bool border_buffer_no_input(struct wlr_scene_buffer *buffer,
