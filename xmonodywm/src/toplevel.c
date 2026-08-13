@@ -201,6 +201,24 @@ void maximized_box(struct server *server, struct wlr_output *output,
 	}
 }
 
+/* geometry of a fullscreen window: inset from the raw output box so the
+ * border ring's outer edge sits CONFIG_FULLSCREEN_GAP px from the screen
+ * edge (CONFIG_MAXIMIZED_GAP is the maximized equivalent; fullscreen
+ * deliberately covers layer-shell bars, so this uses the output box, not
+ * the work area).  The ring is drawn CONFIG_BORDER_WIDTH px outside the
+ * window box, so the box itself is inset by that plus the requested gap,
+ * exactly like maximized_box. */
+static void fullscreen_box(struct server *server, struct wlr_output *output,
+		struct wlr_box *box) {
+	struct wlr_box out;
+	wlr_output_layout_get_box(server->output_layout, output, &out);
+	int gap = CONFIG_BORDER_WIDTH + CONFIG_FULLSCREEN_GAP;
+	box->x = out.x + gap;
+	box->y = out.y + gap;
+	box->width = out.width - 2 * gap;
+	box->height = out.height - 2 * gap;
+}
+
 /* after a layer-shell exclusive-zone change, existing windows that now sit
  * under the bar are moved back into the work area (the bar must never
  * cover them), and maximized windows are re-fitted to the new area */
@@ -303,12 +321,12 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 
 		struct wlr_output *output = toplevel_output(server, tl);
 		if (output != NULL) {
-			struct wlr_box area;
-			wlr_output_layout_get_box(server->output_layout, output, &area);
-			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, area.width,
-				area.height);
-			wlr_scene_node_set_position(&tl->scene_tree->node, area.x,
-				area.y);
+			struct wlr_box fbox;
+			fullscreen_box(server, output, &fbox);
+			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, fbox.width,
+				fbox.height);
+			wlr_scene_node_set_position(&tl->scene_tree->node, fbox.x,
+				fbox.y);
 		} else {
 			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, 0, 0);
 		}

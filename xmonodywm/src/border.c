@@ -7,7 +7,13 @@
  * same thin stroke as the other three sides but split into three equal
  * colored segments (left = minimize #87beaa, middle = maximize/restore
  * #f5a3a3, right = close #d55f6f); the other sides are a ring in the
- * focused/unfocused border color.  The focused window additionally gets a
+ * focused/unfocused border color.  A maximized window follows the normal
+ * window logic (focus-colored ring + three-segment top band);
+ * CONFIG_MAXIMIZED_BORDER_ENABLED=0 drops the border entirely when
+ * maximized.  A fullscreen window draws its band in a single unified
+ * color CONFIG_FULLSCREEN_BORDER_COLOR instead of the three hints
+ * (CONFIG_FULLSCREEN_GAP insets it from the screen edges so the ring
+ * stays visible).  The focused window additionally gets a
  * Windows-11-style soft glow: CONFIG_BORDER_GLOW_SIZE px of the border
  * color fading out beyond the ring (drawn by the same shader); inactive
  * windows never get a glow.  We ride wlroots' own GLES2 context
@@ -184,8 +190,13 @@ static const struct wlr_drm_format *border_format(void) {
 }
 
 /* the border color for a toplevel: brighter for the focused window, muted
- * for everything else */
+ * for everything else.  Maximized windows follow the same focus-colored
+ * logic as normal windows; only fullscreen windows use the dedicated
+ * CONFIG_FULLSCREEN_BORDER_COLOR (which also tints their unified band). */
 static uint32_t toplevel_border_color(struct toplevel *tl) {
+	if (tl->fullscreen) {
+		return CONFIG_FULLSCREEN_BORDER_COLOR;
+	}
 	if (tl->server->focused == tl) {
 		return CONFIG_BORDER_COLOR;
 	}
@@ -196,7 +207,7 @@ static uint32_t toplevel_border_color(struct toplevel *tl) {
  * pass on wlroots' EGL context; saves and restores all state it touches */
 static bool border_render(struct server *server, struct wlr_buffer *buffer,
 		int width, int height, uint32_t color, bool focused, bool dialog,
-		bool show_strip, float ring_width) {
+		bool show_strip, bool unified_strip, float ring_width) {
 	struct wlr_egl *egl = wlr_gles2_renderer_get_egl(server->renderer);
 	if (egl == NULL) {
 		return false;
@@ -261,9 +272,15 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 			(float)((color >> 0) & 0xFF) / 255.0f,
 			(float)((color >> 24) & 0xFF) / 255.0f);
 		/* a dialog's top border is one single close button: all three
-		 * segments render in the close color (no minimize/maximize hint) */
-		uint32_t seg_min = dialog ? CONFIG_BORDER_COLOR_CLOSE : CONFIG_BORDER_COLOR_MIN;
-		uint32_t seg_max = dialog ? CONFIG_BORDER_COLOR_CLOSE : CONFIG_BORDER_COLOR_MAX;
+		 * segments render in the close color (no minimize/maximize hint).
+		 * A maximized window's band is a plain unified strip in the ring
+		 * color (no minimize/maximize/close hints either). */
+		uint32_t seg_min = dialog ? CONFIG_BORDER_COLOR_CLOSE :
+			(unified_strip ? color : CONFIG_BORDER_COLOR_MIN);
+		uint32_t seg_max = dialog ? CONFIG_BORDER_COLOR_CLOSE :
+			(unified_strip ? color : CONFIG_BORDER_COLOR_MAX);
+		uint32_t seg_close = dialog ? CONFIG_BORDER_COLOR_CLOSE :
+			(unified_strip ? color : CONFIG_BORDER_COLOR_CLOSE);
 		glUniform4f(glGetUniformLocation(program, "u_color_min"),
 			(float)((seg_min >> 16) & 0xFF) / 255.0f,
 			(float)((seg_min >> 8) & 0xFF) / 255.0f,
@@ -275,10 +292,10 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 			(float)((seg_max >> 0) & 0xFF) / 255.0f,
 			(float)((seg_max >> 24) & 0xFF) / 255.0f);
 		glUniform4f(glGetUniformLocation(program, "u_color_close"),
-			(float)((CONFIG_BORDER_COLOR_CLOSE >> 16) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_CLOSE >> 8) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_CLOSE >> 0) & 0xFF) / 255.0f,
-			(float)((CONFIG_BORDER_COLOR_CLOSE >> 24) & 0xFF) / 255.0f);
+			(float)((seg_close >> 16) & 0xFF) / 255.0f,
+			(float)((seg_close >> 8) & 0xFF) / 255.0f,
+			(float)((seg_close >> 0) & 0xFF) / 255.0f,
+			(float)((seg_close >> 24) & 0xFF) / 255.0f);
 
 		GLint loc = glGetAttribLocation(program, "a_pos");
 		static const float verts[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
@@ -337,7 +354,7 @@ struct wlr_buffer *border_alloc_buffer(struct server *server,
 bool border_render_ring(struct server *server, struct wlr_buffer *buffer,
 		int width, int height, uint32_t color, float ring_width) {
 	return border_render(server, buffer, width, height, color, false, false,
-		false, ring_width);
+		false, false, ring_width);
 }
 
 /* ------------------------------------------------------------------ */
@@ -347,9 +364,9 @@ bool border_render_ring(struct server *server, struct wlr_buffer *buffer,
 /* drop the border buffer and invalidate the render cache, so the next
  * call for a visible window re-renders instead of reusing a stale buffer.
  * The cache fields must be cleared together with the buffer: otherwise a
- * window minimized (or unmapped/fullscreen) with a pending commit drops the
- * buffer, and when it is restored the cache still matches the old
- * dimensions/colors and the border is never drawn again. */
+ * window minimized (or unmapped/maximized without a border) with a pending
+ * commit drops the buffer, and when it is restored the cache still matches
+ * the old dimensions/colors and the border is never drawn again. */
 static void border_clear_buffer(struct toplevel *tl) {
 	wlr_scene_buffer_set_buffer(tl->deco_border, NULL);
 	tl->deco_w = 0;
@@ -357,6 +374,7 @@ static void border_clear_buffer(struct toplevel *tl) {
 	tl->deco_color = 0;
 	tl->deco_focused = false;
 	tl->deco_dialog = false;
+	tl->deco_unified = false;
 }
 
 /* (re)build the rounded border around the toplevel and position it */
@@ -368,8 +386,13 @@ void update_toplevel_decoration(struct toplevel *tl) {
 	if (tl->deco_border == NULL || base == NULL) {
 		return;
 	}
-	if (!base->surface->mapped || tl->minimized || tl->fullscreen) {
-		/* fullscreen windows don't show the rounded border either */
+	bool maximized = tl->xdg_toplevel->current.maximized;
+	bool unified = tl->fullscreen; /* only fullscreen draws the unified band */
+	if (!base->surface->mapped || tl->minimized ||
+			(maximized && !CONFIG_MAXIMIZED_BORDER_ENABLED)) {
+		/* CONFIG_MAXIMIZED_BORDER_ENABLED=0 hides the border on maximized
+		 * windows; fullscreen windows keep it (CONFIG_FULLSCREEN_GAP
+		 * insets them from the screen edges so the ring stays visible) */
 		border_clear_buffer(tl);
 		return;
 	}
@@ -405,7 +428,8 @@ void update_toplevel_decoration(struct toplevel *tl) {
 	uint32_t color = toplevel_border_color(tl);
 	bool dialog = toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl);
 	if (tl->deco_w != bw || tl->deco_h != bh || tl->deco_color != color ||
-			tl->deco_focused != focused || tl->deco_dialog != dialog) {
+			tl->deco_focused != focused || tl->deco_dialog != dialog ||
+			tl->deco_unified != unified) {
 		struct wlr_buffer *buffer = border_alloc_buffer(tl->server, bw, bh);
 		if (buffer == NULL) {
 			wlr_log(WLR_ERROR, "border: failed to allocate %dx%d buffer",
@@ -413,7 +437,7 @@ void update_toplevel_decoration(struct toplevel *tl) {
 			return;
 		}
 		if (!border_render(tl->server, buffer, bw, bh, color, focused,
-				dialog, true, CONFIG_BORDER_WIDTH)) {
+				dialog, true, unified, CONFIG_BORDER_WIDTH)) {
 			wlr_buffer_drop(buffer);
 			return;
 		}
@@ -425,6 +449,7 @@ void update_toplevel_decoration(struct toplevel *tl) {
 		tl->deco_color = color;
 		tl->deco_focused = focused;
 		tl->deco_dialog = dialog;
+		tl->deco_unified = unified;
 	}
 	wlr_scene_node_set_position(&tl->deco_border->node, box.x - extent,
 		box.y - extent);

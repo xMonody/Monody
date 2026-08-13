@@ -27,6 +27,10 @@
 #define CONFIG_MAXIMIZED_GAP_BAR 0.5          /* 边框和状态栏间距 */
 #define CONFIG_BAR_TOP_OVERLAP   1            /* 窗口顶部相对状态栏的偏移(px) */
 
+#define CONFIG_FULLSCREEN_BORDER_COLOR  0xFF87BEAAu /* 全屏窗口的边框颜色  */
+#define CONFIG_FULLSCREEN_GAP    1                  // 全屏窗口与屏幕边缘的间距 (px)
+#define CONFIG_MAXIMIZED_BORDER_ENABLED 1           /* 最大化时是否显示边框 */
+
 #define CONFIG_BORDER_COLOR           0xFF676E95u   /* 0xFF7C73B0u  活动窗口 (#7C73B0) */
 #define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u   /*  非活动窗口(#676E95) */
 

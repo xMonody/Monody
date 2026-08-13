@@ -175,6 +175,7 @@ struct toplevel {
 	uint32_t deco_color;              /* border color the buffer was rendered with */
 	bool deco_focused;                /* whether the buffer was rendered with the focus glow */
 	bool deco_dialog;                 /* whether the buffer was rendered as a dialog top band */
+	bool deco_unified;                /* whether the buffer was rendered with the unified (non-segmented) top strip */
 
 	/* whether the border/interaction box wraps the committed surface
 	 * instead of the xdg window geometry: set by the rounded-mask pass
