@@ -9,7 +9,9 @@
 
 #include "server.h"
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <libinput.h>
 #include <linux/input-event-codes.h>
@@ -268,6 +270,24 @@ static struct toplevel *cycle_toplevel(struct server *server, bool next) {
 	return neighbor_toplevel(server, server->focused, next, true);
 }
 
+/* the Nth mapped toplevel in creation order (1-based index); NULL when
+ * there is no such window.  Used by MOD+1..9 task switching. */
+static struct toplevel *nth_toplevel(struct server *server, int index) {
+	struct toplevel *tl;
+	int i = 0;
+	wl_list_for_each(tl, &server->toplevels, link) {
+		if (tl->xdg_toplevel->base == NULL ||
+				!tl->xdg_toplevel->base->surface->mapped) {
+			continue;
+		}
+		if (i == index) {
+			return tl;
+		}
+		i++;
+	}
+	return NULL;
+}
+
 /* focus a toplevel, unminimizing it first (it reappears at its remembered
  * position because minimizing only hides the scene node) */
 void focus_window(struct server *server, struct toplevel *tl) {
@@ -279,6 +299,24 @@ void focus_window(struct server *server, struct toplevel *tl) {
 	}
 	focus_toplevel(server, tl);
 	update_cursor_style(server);
+}
+
+/* launch an application from the config_app_shortcuts table */
+static void spawn_app(const struct config_app_shortcut *app) {
+	wlr_log(WLR_DEBUG, "input: spawn app '%s' args='%s'",
+		app->app, app->args != NULL ? app->args : "");
+	if (app->args != NULL && app->args[0] != '\0') {
+		size_t len = strlen(app->app) + 1 + strlen(app->args) + 1;
+		char *cmd = malloc(len);
+		if (cmd == NULL) {
+			return;
+		}
+		snprintf(cmd, len, "%s %s", app->app, app->args);
+		spawn_command(cmd);
+		free(cmd);
+	} else {
+		spawn_command(app->app);
+	}
 }
 
 /* compositor keyboard shortcuts (modifier combos and keysyms are defined
@@ -333,9 +371,37 @@ static bool keyboard_shortcut(struct server *server,
 			}
 			return true;
 		}
-		if (main_mod && sym == CONFIG_KEY_TERMINAL) {
-			spawn_command("foot");
+		if (main_mod && sym == CONFIG_KEY_CLOSE_OTHER) {
+			/* close every window except the currently focused one;
+			 * close_toplevel works for minimized/maximized/fullscreen
+			 * toplevels as well */
+			struct toplevel *tl, *tmp;
+			wl_list_for_each_safe(tl, tmp, &server->toplevels, link) {
+				if (tl != server->focused) {
+					close_toplevel(tl);
+				}
+			}
 			return true;
+		}
+		if ((mods & CONFIG_MOD_TASK) == CONFIG_MOD_TASK &&
+				sym >= XKB_KEY_1 && sym <= XKB_KEY_9) {
+			struct toplevel *tl = nth_toplevel(server,
+				sym - XKB_KEY_1);
+			if (tl != NULL) {
+				focus_window(server, tl);
+			}
+			return true;
+		}
+		for (size_t i = 0;
+				i < sizeof(config_app_shortcuts) /
+					sizeof(config_app_shortcuts[0]); i++) {
+			const struct config_app_shortcut *app =
+				&config_app_shortcuts[i];
+			if ((mods & app->mods) == app->mods &&
+					sym == app->key) {
+				spawn_app(app);
+				return true;
+			}
 		}
 	}
 	return false;

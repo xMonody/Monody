@@ -14,33 +14,29 @@
 #include <wlr/types/wlr_keyboard.h>
 
 #define CONFIG_TITLEBAR_CURSOR "all-scroll" /* cursor shown while hovering the title strip */
-#define CONFIG_BORDER_WIDTH     1.5        /* 边框宽度 */
-#define CONFIG_BORDER_RADIUS    10         /* 边框圆角 (px) */
-#define CONFIG_TITLEBAR_HEIGHT  8          /* 移动窗口边框范围 */
-#define CONFIG_EDGE_THICKNESS   8          /* 调整窗口大小边框范围 */
+#define CONFIG_BORDER_WIDTH     1.5         /* 边框可见粗细 */
+#define CONFIG_BORDER_RADIUS    8           /* 边框圆角 (px) */
+#define CONFIG_TITLEBAR_HEIGHT  8           /* 移动窗口边框范围 */
+#define CONFIG_EDGE_THICKNESS   8           /* 调整窗口大小边框范围 */
 
-#define CONFIG_BORDER_OVERLAP    1.5        /* 控制边框宽度 */
-#define CONFIG_MAXIMIZED_GAP     1          /* 边框和屏幕间距 */
-#define CONFIG_MAXIMIZED_GAP_BAR 1.5        /* 边框和状态栏间距 */
-#define CONFIG_BAR_TOP_OVERLAP  -1.5        /* 窗口顶部相对状态栏的偏移(px) */
+#define CONFIG_BORDER_OVERLAP    0.5          /* 边框在窗口内边缘宽度 */
+#define CONFIG_MAXIMIZED_GAP     1            /* 边框和屏幕间距 */
+#define CONFIG_MAXIMIZED_GAP_BAR 0.5          /* 边框和状态栏间距 */
+#define CONFIG_BAR_TOP_OVERLAP   1            /* 窗口顶部相对状态栏的偏移(px) */
 
-#define CONFIG_BORDER_COLOR 0xFF676E95u  /* 0xFF7C73B0u  活动窗口, 0xAARRGGBB (#7C73B0) */
-#define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u /*  非活动窗口(#676E95) */
+#define CONFIG_BORDER_COLOR           0xFF676E95u   /* 0xFF7C73B0u  活动窗口 (#7C73B0) */
+#define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u   /*  非活动窗口(#676E95) */
 
 /* popup (菜单/提示框/下拉框) 边框 */
 #define CONFIG_POPUP_BORDER_WIDTH  1            /* popup 边框宽度 (px) */
 #define CONFIG_POPUP_BORDER_COLOR  0xFF676E95u    /* popup 边框颜色, 0xAARRGGBB */
 
-/* Windows 11 风格的柔和光晕, 只画在**活动**窗口的边框外侧: 从边框外缘
- * 向外延伸 CONFIG_BORDER_GLOW_SIZE px, 用边框色按 (1-t^2)^2 曲线渐进淡出
- * (边缘最亮, 越往外越淡, 到边界精确归零); 峰值不透明度为
- * CONFIG_BORDER_GLOW_ALPHA (0..1, 0.18 = 很淡的一层). 非活动窗口永远
- * 不绘制光晕. 把大小设为 0 即可完全关闭. */
+/* 不绘制光晕. 把大小设为 0 即可完全关闭. */
 #define CONFIG_BORDER_GLOW_SIZE 18        /* 光晕超出边框的宽度 (px) */
 #define CONFIG_BORDER_GLOW_ALPHA 0.18f    /* 光晕在边框边缘处的峰值不透明度 */
 
-#define CONFIG_BORDER_COLOR_MIN 0xFF87BEAAu /* left third: minimize (#87beaa) */
-#define CONFIG_BORDER_COLOR_MAX 0xFFF5A3A3u    /* middle third: maximize/restore (#f5a3a3) */
+#define CONFIG_BORDER_COLOR_MIN 0xFFF5A3A3u    /* middle third: minimize/restore (#f5a3a3) */
+#define CONFIG_BORDER_COLOR_MAX 0xFF87BEAAu /* left third: maximize (#87beaa) */
 #define CONFIG_BORDER_COLOR_CLOSE 0xFFD55F6Fu  /* right third: close (#d55f6f) */
 
 #define CONFIG_DOUBLE_CLICK_NS (400 * 1000000L) /* double-click window (ns) */
@@ -60,14 +56,39 @@
 
 #define CONFIG_MOD_MAIN (WLR_MODIFIER_SHIFT | WLR_MODIFIER_ALT) /* Shift+Alt */
 #define CONFIG_MOD_QUIT (WLR_MODIFIER_LOGO)
+#define CONFIG_MOD_TASK WLR_MODIFIER_ALT /* 可改为 WLR_MODIFIER_ALT */
 
 /* keysyms, see /usr/include/xkbcommon/xkbcommon-keysyms.h */
-#define CONFIG_KEY_QUIT XKB_KEY_q
-#define CONFIG_KEY_MAXIMIZE XKB_KEY_Return
-#define CONFIG_KEY_MINIMIZE XKB_KEY_m
-#define CONFIG_KEY_NEXT_WINDOW XKB_KEY_n
-#define CONFIG_KEY_PREV_WINDOW XKB_KEY_p
-#define CONFIG_KEY_CLOSE XKB_KEY_c
-#define CONFIG_KEY_TERMINAL XKB_KEY_f
+#define CONFIG_KEY_QUIT XKB_KEY_q            // quit
+#define CONFIG_KEY_MAXIMIZE XKB_KEY_Return   // max
+#define CONFIG_KEY_MINIMIZE XKB_KEY_m        // mini
+#define CONFIG_KEY_NEXT_WINDOW XKB_KEY_n     // next app
+#define CONFIG_KEY_PREV_WINDOW XKB_KEY_p     // prev app
+#define CONFIG_KEY_CLOSE XKB_KEY_c           // close app
+#define CONFIG_KEY_CLOSE_OTHER XKB_KEY_x      // close other apps
+
+
+
+#define MODKEY1 WLR_MODIFIER_LOGO                        // win
+#define MODKEY2 WLR_MODIFIER_SHIFT | WLR_MODIFIER_ALT    // shift+alt
+#define MODKEY3 WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL   // shift+ctrl
+#define MODKEY WLR_MODIFIER_ALT   | WLR_MODIFIER_CTRL   // alt+ctrl
+
+
+/* 应用启动快捷键: mods + key 启动 app，args 可为 NULL 或空串 */
+struct config_app_shortcut {
+	uint32_t mods;
+	xkb_keysym_t key;
+	const char *app;
+	const char *args;
+};
+
+static const struct config_app_shortcut config_app_shortcuts[] = {
+	{ MODKEY, XKB_KEY_f, "foot",    NULL },
+	{ MODKEY, XKB_KEY_c, "firefox", NULL },
+	{ MODKEY, XKB_KEY_w, "wezterm", NULL },
+	{ MODKEY, XKB_KEY_k, "kitty",   NULL },
+	{ MODKEY, XKB_KEY_q, "qq",      NULL },
+};
 
 #endif /* XMONODYWM_CONFIG_H */

@@ -344,6 +344,21 @@ bool border_render_ring(struct server *server, struct wlr_buffer *buffer,
 /* decoration update                                                  */
 /* ------------------------------------------------------------------ */
 
+/* drop the border buffer and invalidate the render cache, so the next
+ * call for a visible window re-renders instead of reusing a stale buffer.
+ * The cache fields must be cleared together with the buffer: otherwise a
+ * window minimized (or unmapped/fullscreen) with a pending commit drops the
+ * buffer, and when it is restored the cache still matches the old
+ * dimensions/colors and the border is never drawn again. */
+static void border_clear_buffer(struct toplevel *tl) {
+	wlr_scene_buffer_set_buffer(tl->deco_border, NULL);
+	tl->deco_w = 0;
+	tl->deco_h = 0;
+	tl->deco_color = 0;
+	tl->deco_focused = false;
+	tl->deco_dialog = false;
+}
+
 /* (re)build the rounded border around the toplevel and position it */
 void update_toplevel_decoration(struct toplevel *tl) {
 	/* the blur backdrop follows the same geometry rules as the border */
@@ -355,7 +370,7 @@ void update_toplevel_decoration(struct toplevel *tl) {
 	}
 	if (!base->surface->mapped || tl->minimized || tl->fullscreen) {
 		/* fullscreen windows don't show the rounded border either */
-		wlr_scene_buffer_set_buffer(tl->deco_border, NULL);
+		border_clear_buffer(tl);
 		return;
 	}
 	struct wlr_box box;
@@ -364,7 +379,7 @@ void update_toplevel_decoration(struct toplevel *tl) {
 		tl->app_id ? tl->app_id : "?", box.x, box.y, box.width,
 		box.height);
 	if (box.width <= 0 || box.height <= 0) {
-		wlr_scene_buffer_set_buffer(tl->deco_border, NULL);
+		border_clear_buffer(tl);
 		return;
 	}
 	/* the border buffer covers the window box plus the ring's outer extent

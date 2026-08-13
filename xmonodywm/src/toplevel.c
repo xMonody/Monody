@@ -489,6 +489,12 @@ void set_minimized(struct server *server, struct toplevel *tl,
 	}
 	/* hiding the window may expose a different surface under the cursor */
 	update_cursor_style(server);
+	/* keep the border in sync with the minimized state: minimizing drops
+	 * the border buffer (the window is hidden), restoring re-renders it.
+	 * Without this a window that committed a frame while minimized would
+	 * restore with its border buffer still NULL (the render cache in
+	 * border.c thought it was up to date). */
+	update_toplevel_decoration(tl);
 }
 
 void focus_toplevel(struct server *server, struct toplevel *tl) {

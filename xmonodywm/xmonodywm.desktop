@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=xmonodywm
+Comment=My xMonody WM
+Exec=~/aiwm/xmonodywm/build/xmonodywm
+Type=Application
