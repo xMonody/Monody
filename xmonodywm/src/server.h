@@ -95,6 +95,7 @@ struct ime {
 	/* candidate window shown by the IM (fcitx5) */
 	struct wlr_input_popup_surface_v2 *popup_surface;
 	struct wlr_scene_surface *popup_scene_surface;
+	struct wl_listener popup_commit;
 	struct wl_listener popup_destroy;
 };
 
@@ -104,6 +105,12 @@ struct text_input {
 	struct wl_list link; /* server.text_inputs */
 
 	struct wlr_text_input_v3 *text_input;
+	/* compositor-side cache of the surface this text input is focused on.
+	 * wlr_text_input_v3_send_enter()/send_leave() maintain
+	 * text_input->focused_surface inside wlroots; we keep our own copy so
+	 * focus transitions can be decided without relying on wlroots' field
+	 * during surface destruction. */
+	struct wlr_surface *focused_surface;
 	struct wl_listener destroy;
 	struct wl_listener enable;
 	struct wl_listener disable;

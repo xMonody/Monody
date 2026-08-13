@@ -135,14 +135,16 @@ static void update_text_inputs_focused_surface(struct server *server) {
 				same_client(input, surface)) {
 			new_focused = surface;
 		}
-		if (input->focused_surface == new_focused) {
+		if (ti->focused_surface == new_focused) {
 			continue;
 		}
-		if (input->focused_surface != NULL) {
+		if (ti->focused_surface != NULL) {
 			wlr_text_input_v3_send_leave(input);
+			ti->focused_surface = NULL;
 		}
 		if (new_focused != NULL) {
 			wlr_text_input_v3_send_enter(input, new_focused);
+			ti->focused_surface = new_focused;
 		}
 	}
 }
@@ -154,7 +156,7 @@ static struct text_input *get_active_text_input(struct server *server) {
 	}
 	struct text_input *ti;
 	wl_list_for_each(ti, &server->text_inputs, link) {
-		if (ti->text_input->focused_surface != NULL &&
+		if (ti->focused_surface != NULL &&
 				ti->text_input->current_enabled) {
 			return ti;
 		}
@@ -188,7 +190,29 @@ static void ime_focused_surface_destroy(struct wl_listener *listener,
 		void *data) {
 	struct server *server =
 		wl_container_of(listener, server, ime_focused_surface_destroy);
-	ime_set_focus(server, NULL);
+	struct wlr_surface *destroyed = data;
+	if (server->ime_focused_surface != destroyed) {
+		return;
+	}
+	/* The focused surface is already being destroyed.  Do not call
+	 * ime_set_focus(NULL) here: that would send leave with a surface
+	 * resource that is already going away (Qt logs this as a null leave
+	 * surface).  wlroots' own per-text-input surface destroy listener will
+	 * clear text_input->focused_surface; clear only our compositor-side
+	 * cache and deactivate the input method. */
+	wl_list_remove(&server->ime_focused_surface_destroy.link);
+	wl_list_init(&server->ime_focused_surface_destroy.link);
+	server->ime_focused_surface = NULL;
+
+	struct text_input *ti;
+	wl_list_for_each(ti, &server->text_inputs, link) {
+		if (ti->focused_surface == destroyed) {
+			ti->focused_surface = NULL;
+		}
+	}
+
+	update_active_text_input(server);
+	ime_update_popup(server);
 }
 
 /* (re)associate the focused surface with the seat's text inputs; called
@@ -240,21 +264,36 @@ void ime_update_popup(struct server *server) {
 
 		int lx = server->cursor->x;
 		int ly = server->cursor->y;
+		int caret_global_x = 0;
+		int caret_global_y = 0;
+		int surface_global_x = 0;
+		int surface_global_y = 0;
+		bool caret_mapped = false;
 		if (have_caret && server->focused != NULL &&
 				server->focused->xdg_toplevel != NULL &&
 				server->focused->xdg_toplevel->base != NULL &&
+				server->focused->masked != NULL &&
 				server->focused->xdg_toplevel->base->surface ==
 					server->ime_focused_surface) {
-			/* surface coordinates -> scene coordinates: the masked
-			 * content sits at (-geometry) inside the toplevel's tree */
-			struct wlr_xdg_surface *xdg =
-				server->focused->xdg_toplevel->base;
-			lx = server->focused->scene_tree->node.x -
-				xdg->geometry.x + caret.x;
-			ly = server->focused->scene_tree->node.y -
-				xdg->geometry.y + caret.y;
-			/* place the candidate list below the text line */
-			ly += caret.height;
+			/* text-input-v3 cursor_rectangle is surface-local logical.
+			 * Get the client surface's top-left directly from the scene
+			 * node that actually displays it (tl->masked), which already
+			 * includes the xdg geometry offset, parent scene-tree offsets
+			 * and any server-side decoration layout.  Do not apply
+			 * output/fractional scale: the rectangle is not in buffer
+			 * pixels. */
+			wlr_scene_node_coords(&server->focused->masked->node,
+				&surface_global_x, &surface_global_y);
+			caret_global_x = surface_global_x + caret.x;
+			caret_global_y = surface_global_y + caret.y;
+			caret_mapped = true;
+			/* fcitx5 anchors its candidate window at the cursor rect's
+			 * left edge (see classicui/xcbinputwindow.cpp), so place the
+			 * popup below the text line and horizontally at the caret's
+			 * left edge.  The text-input rectangle below tells the IM
+			 * where the caret is relative to this anchor. */
+			lx = caret_global_x;
+			ly = caret_global_y + caret.height;
 		}
 
 		int popup_x = lx;
@@ -286,11 +325,16 @@ void ime_update_popup(struct server *server) {
 		/* make sure the candidate list sits above layer-shell surfaces */
 		wlr_scene_node_raise_to_top(&scene_surface->buffer->node);
 
-		/* tell the IM where the text caret is (relative to the popup) */
+		/* tell the IM where the text caret is (relative to the popup).
+		 * The rectangle is the caret's surface-local box expressed in the
+		 * popup surface's coordinate system; it must use the caret's
+		 * top-left, not the popup anchor below the caret. */
 		if (ime->popup_surface != NULL) {
 			struct wlr_box sbox = {
-				.x = lx - popup_x,
-				.y = ly - popup_y,
+				.x = caret_mapped ? caret_global_x - popup_x
+					: lx - popup_x,
+				.y = caret_mapped ? caret_global_y - popup_y
+					: ly - popup_y,
 				.width = caret.width,
 				.height = caret.height,
 			};
@@ -533,8 +577,14 @@ static void ime_commit(struct wl_listener *listener, void *data) {
 
 /* candidate window: place the popup surface in the overlay layer so
  * fcitx5's candidate list is visible */
+static void ime_popup_commit(struct wl_listener *listener, void *data) {
+	struct ime *ime = wl_container_of(listener, ime, popup_commit);
+	ime_update_popup(ime->server);
+}
+
 static void ime_popup_destroy(struct wl_listener *listener, void *data) {
 	struct ime *ime = wl_container_of(listener, ime, popup_destroy);
+	wl_list_remove(&ime->popup_commit.link);
 	wl_list_remove(&ime->popup_destroy.link);
 	ime->popup_scene_surface = NULL;
 	ime->popup_surface = NULL;
@@ -556,6 +606,8 @@ static void ime_new_popup_surface(struct wl_listener *listener, void *data) {
 
 	ime->popup_scene_surface = scene_surface;
 	ime->popup_surface = popup;
+	ime->popup_commit.notify = ime_popup_commit;
+	wl_signal_add(&popup->surface->events.commit, &ime->popup_commit);
 	ime->popup_destroy.notify = ime_popup_destroy;
 	wl_signal_add(&popup->events.destroy, &ime->popup_destroy);
 	ime_update_popup(server);
@@ -571,6 +623,9 @@ static void ime_destroy(struct wl_listener *listener, void *data) {
 	}
 	if (ime->keyboard_grab_destroy_added) {
 		wl_list_remove(&ime->keyboard_grab_destroy.link);
+	}
+	if (ime->popup_surface != NULL) {
+		wl_list_remove(&ime->popup_commit.link);
 	}
 	wl_list_remove(&ime->destroy.link);
 	wl_list_remove(&ime->grab_keyboard.link);
