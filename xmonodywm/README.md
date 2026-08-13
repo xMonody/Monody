@@ -259,8 +259,9 @@ Everything tunable lives in **`src/config.h`** (edit and rebuild):
 |---|---|---|
 | `CONFIG_BORDER_RADIUS` | rounded-corner radius of the border (px) | `12` |
 | `CONFIG_BORDER_WIDTH` / `CONFIG_BORDER_OVERLAP` / `CONFIG_BORDER_COLOR` | border stroke / overlap onto content / color (`0xAARRGGBB`) | `2` / `1` / `#7C73B0` |
-| `CONFIG_BORDER_GLOW_SIZE` / `CONFIG_BORDER_GLOW_ALPHA` | Windows-11-style soft halo around the **active** window's border: width beyond the ring (px) / peak opacity at the ring (0..1; 0 = off), fading out progressively | `18` / `0.18` |
+| `CONFIG_BORDER_GLOW_SIZE` / `CONFIG_BORDER_GLOW_ALPHA` | Windows-11-style soft halo around the **active** window's border: width beyond the ring (px) / peak opacity at the ring (0..1; 0 = off), fading out progressively; above the top edge the glow follows the band's segment colors | `18` / `0.18` |
 | `CONFIG_BORDER_COLOR_MIN` / `_MAX` / `_CLOSE` | top-border segment colors: left (minimize) / middle (maximize-restore) / right (close) | `#87beaa` / `#f5a3a3` / `#d55f6f` |
+| `CONFIG_BORDER_BAND_BLEND` | gradient width at the seams between the three top-band segment colors (px); `0` = hard edges | `16` |
 | `CONFIG_MAXIMIZED_BORDER_ENABLED` | `1`: maximized windows keep the border, its top band a single unified color (the ring color); `0`: no border when maximized | `1` |
 | `CONFIG_FULLSCREEN_GAP` | fullscreen window inset from the screen edges (px), like `CONFIG_MAXIMIZED_GAP_BAR`, so the border ring around a fullscreen window is clearly visible (`0` = ring flush with the screen edge) | `1` |
 | `CONFIG_FULLSCREEN_BORDER_COLOR` | border color of fullscreen windows (ring + unified top band, `0xAARRGGBB`); maximized windows keep the normal focus-colored ring + three-segment top band | `#F5A3A3` |

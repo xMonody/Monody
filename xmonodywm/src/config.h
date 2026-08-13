@@ -41,10 +41,12 @@
 /* 不绘制光晕. 把大小设为 0 即可完全关闭. */
 #define CONFIG_BORDER_GLOW_SIZE 18        /* 光晕超出边框的宽度 (px) */
 #define CONFIG_BORDER_GLOW_ALPHA 0.18f    /* 光晕在边框边缘处的峰值不透明度 */
+#define CONFIG_BORDER_BAND_BLEND 15 /* 顶部三段色拼接处的渐变宽度 (px) */
 
 #define CONFIG_BORDER_COLOR_MIN 0xFFF5A3A3u    /* middle third: minimize/restore (#f5a3a3) */
 #define CONFIG_BORDER_COLOR_MAX 0xFF87BEAAu /* left third: maximize (#87beaa) */
 #define CONFIG_BORDER_COLOR_CLOSE 0xFFD55F6Fu  /* right third: close (#d55f6f) */
+
 
 #define CONFIG_DOUBLE_CLICK_NS (400 * 1000000L) /* double-click window (ns) */
 #define CONFIG_LONG_PRESS_NS (350 * 1000000L) /* holding the strip this long grabs the window (ns) */

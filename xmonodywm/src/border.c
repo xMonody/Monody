@@ -15,8 +15,11 @@
  * (CONFIG_FULLSCREEN_GAP insets it from the screen edges so the ring
  * stays visible).  The focused window additionally gets a
  * Windows-11-style soft glow: CONFIG_BORDER_GLOW_SIZE px of the border
- * color fading out beyond the ring (drawn by the same shader); inactive
- * windows never get a glow.  We ride wlroots' own GLES2 context
+ * color fading out beyond the ring (drawn by the same shader); above the
+ * top edge the glow follows the band's own colors (three segments for
+ * normal windows, the single band color for dialogs/fullscreen), while
+ * the sides and bottom keep the ring color.  Inactive windows never get
+ * a glow.  We ride wlroots' own GLES2 context
  * (wlr_gles2_renderer_get_egl) and render into a wlr_allocator buffer
  * through its FBO (wlr_gles2_renderer_get_buffer_fbo); the scene graph
  * then composites that texture like any other buffer.
@@ -69,6 +72,7 @@ static const char *border_fragment_src =
 	"uniform vec4 u_color_max;\n"
 	"uniform vec4 u_color_close;\n"
 	"uniform float u_strip;\n"
+	"uniform float u_band_blend;\n"
 	"/* rounded-rect SDF: negative inside, positive outside */\n"
 	"float sdRoundBox(vec2 p, vec2 b, float r) {\n"
 	"	vec2 q = abs(p) - b + r;\n"
@@ -97,7 +101,9 @@ static const char *border_fragment_src =
 	"	 * halo never tints the window content; the ring is opaque right at\n"
 	"	 * the edge, so max() hands over smoothly.  The (1 - t^2)^2 falloff\n"
 	"	 * is brightest at the ring and trails off progressively to exactly\n"
-	"	 * zero at the buffer edge, for a natural ambient look. */\n"
+	"	 * zero at the buffer edge, for a natural ambient look.  Above the\n"
+	"	 * top edge the halo is tinted by the band's segment colors (see\n"
+	"	 * the top band section below). */\n"
 	"	float t = clamp(d_out / max(u_glow, 0.001), 0.0, 1.0);\n"
 	"	float fade = (1.0 - t * t) * (1.0 - t * t);\n"
 	"	float halo = u_glow_alpha * step(0.0, d_out) * fade;\n"
@@ -110,12 +116,26 @@ static const char *border_fragment_src =
 	"	float y_bottom = -half_out.y + strip_h;\n"
 	"	float strip = u_strip * inside_out * (1.0 - smoothstep(-1.0, 1.0, p.y - y_bottom));\n"
 	"	/* three equal segments over the window width: left = minimize,\n"
-	"	 * middle = maximize/restore, right = close */\n"
+	"	 * middle = maximize/restore, right = close.  The seams blend over\n"
+	"	 * u_band_blend px (CONFIG_BORDER_BAND_BLEND) so the color change is\n"
+	"	 * a smooth gradient instead of a hard step; max() guards\n"
+	"	 * smoothstep's undefined edge0==edge1 case when the blend is 0. */\n"
 	"	float win_w = u_size.x - 2.0 * (u_width + u_glow);\n"
 	"	float third = win_w / 6.0;\n"
-	"	vec3 seg = p.x < -third ? u_color_min.rgb\n"
-	"		: (p.x < third ? u_color_max.rgb : u_color_close.rgb);\n"
-	"	vec3 rgb = mix(u_color.rgb, seg, strip);\n"
+	"	float blend = max(u_band_blend, 0.001);\n"
+	"	vec3 seg = mix(u_color_min.rgb, u_color_max.rgb,\n"
+	"		smoothstep(-third - blend, -third + blend, p.x));\n"
+	"	seg = mix(seg, u_color_close.rgb,\n"
+	"		smoothstep(third - blend, third + blend, p.x));\n"
+	"	/* the glow above the top edge follows the band's own color: normal\n"
+	"	 * windows get the three segment colors, dialogs and fullscreen a\n"
+	"	 * single band color (their segment uniforms are set to it); the\n"
+	"	 * sides/bottom halo stays the ring color.  Where halo > 0 the ring\n"
+	"	 * and strip are already 0, so the mixes never fight. */\n"
+	"	vec3 halo_tint = mix(u_color.rgb, seg,\n"
+	"		clamp(halo / max(u_glow_alpha, 0.001), 0.0, 1.0));\n"
+	"	vec3 rgb = mix(u_color.rgb, halo_tint, step(half_out.y, -p.y));\n"
+	"	rgb = mix(rgb, seg, strip);\n"
 	"	float alpha = max(max(ring, strip), halo);\n"
 	"	/* output premultiplied color: rgb must be scaled by alpha, else\n"
 	"	 * the 'transparent' pixels would contribute full color when\n"
@@ -265,6 +285,8 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 			focused ? CONFIG_BORDER_GLOW_ALPHA : 0.0f);
 		glUniform1f(glGetUniformLocation(program, "u_strip"),
 			show_strip ? 1.0f : 0.0f);
+		glUniform1f(glGetUniformLocation(program, "u_band_blend"),
+			CONFIG_BORDER_BAND_BLEND);
 		/* colors are 0xAARRGGBB */
 		glUniform4f(glGetUniformLocation(program, "u_color"),
 			(float)((color >> 16) & 0xFF) / 255.0f,
@@ -273,8 +295,10 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 			(float)((color >> 24) & 0xFF) / 255.0f);
 		/* a dialog's top border is one single close button: all three
 		 * segments render in the close color (no minimize/maximize hint).
-		 * A maximized window's band is a plain unified strip in the ring
-		 * color (no minimize/maximize/close hints either). */
+		 * A fullscreen window's band is a plain unified strip in the ring
+		 * color (no minimize/maximize/close hints either).  Either way the
+		 * shader's top glow reuses these segment colors, so the glow above
+		 * the top always matches the band it sits over. */
 		uint32_t seg_min = dialog ? CONFIG_BORDER_COLOR_CLOSE :
 			(unified_strip ? color : CONFIG_BORDER_COLOR_MIN);
 		uint32_t seg_max = dialog ? CONFIG_BORDER_COLOR_CLOSE :
