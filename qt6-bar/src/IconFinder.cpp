@@ -75,8 +75,9 @@ QString checkFile(const QString &base)
 
 QString findIconInThemeDirs(const QString &candidate)
 {
-    // Preferred icon sizes, largest first (Qt will downscale).
-    static const char *const sizes[] = {"256", "128", "64", "48", "32", "24", "22", "16"};
+    // Preferred icon sizes, largest first (Qt will downscale). 512 is in
+    // the list because some apps (e.g. QQ) ship their icon only at 512x512.
+    static const char *const sizes[] = {"512", "256", "128", "64", "48", "32", "24", "22", "16"};
 
     QStringList themeRoots;
     const QByteArray xdgData = qgetenv("XDG_DATA_HOME");
@@ -123,6 +124,15 @@ QString find(const QString &name)
 {
     if (name.isEmpty())
         return {};
+
+    // Absolute path (Icon= in a .desktop file is often an absolute path,
+    // e.g. /usr/share/icons/hicolor/512x512/apps/qq.png): use it as-is.
+    if (name.startsWith(QLatin1Char('/'))) {
+        const QFileInfo fi(name);
+        if (fi.isFile())
+            return QUrl::fromLocalFile(fi.absoluteFilePath()).toString();
+        return {};
+    }
 
     // Try a few common spellings of the icon/app_id.
     QList<QString> candidates;

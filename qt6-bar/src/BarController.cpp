@@ -360,5 +360,7 @@ void BarController::launchApp(const QString &execLine)
 
 QString BarController::findIcon(const QString &appId) const
 {
-    return IconFinder::find(appId);
+    // Full app_id lookup: direct name match first, then the .desktop-file
+    // fallback (file basename / StartupWMClass / Name -> Icon=).
+    return IconFinder::findForAppId(appId);
 }
