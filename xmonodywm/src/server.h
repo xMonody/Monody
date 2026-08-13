@@ -228,6 +228,12 @@ struct toplevel {
 	struct wlr_box restore_box;
 	bool has_restore_box;
 
+	/* geometry to restore when leaving fullscreen; kept separate from
+	 * restore_box so entering fullscreen from a maximized window does not
+	 * clobber the floating geometry saved by maximize */
+	struct wlr_box fullscreen_restore_box;
+	bool has_fullscreen_restore_box;
+
 	/* fullscreen state (tracks current.fullscreen which only updates on ack) */
 	bool fullscreen;
 

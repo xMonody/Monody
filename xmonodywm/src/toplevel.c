@@ -294,9 +294,12 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 	tl->user_moved = true; /* fullscreen state: stop auto-centering */
 	tl->fullscreen = fullscreen;
 	if (fullscreen) {
-		/* remember the floating geometry so it can be restored later */
-		toplevel_box(tl, &tl->restore_box);
-		tl->has_restore_box = true;
+		/* remember the pre-fullscreen geometry so it can be restored
+		 * later.  Keep this separate from restore_box: entering fullscreen
+		 * from a maximized window must not overwrite the floating geometry
+		 * that maximize saved. */
+		toplevel_box(tl, &tl->fullscreen_restore_box);
+		tl->has_fullscreen_restore_box = true;
 
 		struct wlr_output *output = toplevel_output(server, tl);
 		if (output != NULL) {
@@ -310,14 +313,17 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 			wlr_xdg_toplevel_set_size(tl->xdg_toplevel, 0, 0);
 		}
 	} else {
-		if (tl->has_restore_box && tl->restore_box.width > 0) {
-			int x = tl->restore_box.x;
-			int y = tl->restore_box.y;
+		if (tl->has_fullscreen_restore_box &&
+				tl->fullscreen_restore_box.width > 0) {
+			int x = tl->fullscreen_restore_box.x;
+			int y = tl->fullscreen_restore_box.y;
 			/* never restore underneath a layer-shell bar */
-			clamp_to_work_area(server, &x, &y, tl->restore_box.width,
-				tl->restore_box.height);
+			clamp_to_work_area(server, &x, &y,
+				tl->fullscreen_restore_box.width,
+				tl->fullscreen_restore_box.height);
 			wlr_xdg_toplevel_set_size(tl->xdg_toplevel,
-				tl->restore_box.width, tl->restore_box.height);
+				tl->fullscreen_restore_box.width,
+				tl->fullscreen_restore_box.height);
 			wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
 		}
 	}
@@ -334,6 +340,11 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 void set_maximized(struct server *server, struct toplevel *tl,
 		bool maximized) {
 	if (tl->xdg_toplevel->base == NULL) {
+		return;
+	}
+	if (tl->fullscreen) {
+		/* while fullscreen, maximize/restore is not available; only
+		 * leaving fullscreen returns the window to its previous state */
 		return;
 	}
 	if (toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl)) {
@@ -418,7 +429,7 @@ void set_maximized(struct server *server, struct toplevel *tl,
  * window's title bar) */
 void restore_maximized_toplevel(struct toplevel *tl) {
 	if (tl->xdg_toplevel->base == NULL ||
-			!tl->xdg_toplevel->current.maximized) {
+			!tl->xdg_toplevel->current.maximized || tl->fullscreen) {
 		return;
 	}
 	tl->user_moved = true; /* drag-restore: stop auto-centering */
