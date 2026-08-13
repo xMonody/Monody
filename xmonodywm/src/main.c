@@ -242,7 +242,7 @@ int main(int argc, char *argv[]) {
 		return EXIT_FAILURE;
 	}
 	wlr_cursor_attach_output_layout(server.cursor, server.output_layout);
-	server.xcursor_manager = wlr_xcursor_manager_create(NULL, 24);
+	server.xcursor_manager = wlr_xcursor_manager_create(CONFIG_CURSOR_THEME, 24);
 	if (server.xcursor_manager == NULL) {
 		wlr_log(WLR_ERROR, "failed to create xcursor manager");
 		return EXIT_FAILURE;

@@ -178,6 +178,10 @@ add_executable(test-cursor-shape test-cursor-shape.c)
 target_include_directories(test-cursor-shape PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-cursor-shape PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
 
+add_executable(test-select-drag test-select-drag.c)
+target_include_directories(test-select-drag PRIVATE ${PROTOCOL_GEN_DIR})
+target_link_libraries(test-select-drag PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
+
 # border test: two toplevels + focus switches (repaint focused/unfocused
 # border colors); smoke test for the GLES2 border re-render path
 add_executable(test-bar-clamp test-bar-clamp.c)
@@ -214,6 +218,7 @@ add_dependencies(test-client protocols)
 add_dependencies(test-interaction protocols)
 add_dependencies(test-cursor protocols)
 add_dependencies(test-cursor-shape protocols)
+add_dependencies(test-select-drag protocols)
 add_dependencies(test-bar-clamp protocols)
 add_dependencies(test-border protocols)
 add_dependencies(test-quit protocols)

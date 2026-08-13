@@ -406,7 +406,8 @@ static void set_cursor_override(struct server *server, const char *name) {
 		return;
 	}
 	server->cursor_override = name;
-	wlr_log(WLR_DEBUG, "cursor: %s", name);
+	wlr_log(WLR_DEBUG, "cursor: %s (buttons=%zu)", name,
+		server->seat->pointer_state.button_count);
 	wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager, name);
 }
 
@@ -496,9 +497,17 @@ void update_cursor_style(struct server *server) {
 	const char *name = NULL;
 
 	if (server->moving && server->move_toplevel != NULL) {
-		name = "grabbing";
+		name = CONFIG_MOVE_CURSOR;
 	} else if (server->resizing && server->resize_toplevel != NULL) {
 		name = resize_cursor_name(server->resize_edges);
+	} else if (server->seat->pointer_state.button_count > 0) {
+		/* implicit grab: a client holds a pointer button (text selection,
+		 * right-button drag, ...) and the pointer is focused on its
+		 * surface.  Never switch to the compositor's hover cursors (edge
+		 * resize / title strip) while that button is held, no matter which
+		 * path reaches here (motion, button release, focus change); the
+		 * client's cursor stays until the last button is released. */
+		return;
 	} else {
 		struct toplevel *tl = toplevel_nearby(server);
 		if (tl != NULL) {
@@ -630,7 +639,7 @@ void end_resize(struct server *server) {
  *   right held + double-click left -> toggle maximize / restore
  *   left held + double-click right -> close the window
  *   hold the other button          -> move the window under the cursor
- *                                    (cursor turns "grabbing"; releasing
+ *                                    (cursor turns to CONFIG_MOVE_CURSOR; releasing
  *                                    restores the previous cursor style) */
 
 /* start moving the chord's window with the cursor; the grab anchors at the
@@ -671,7 +680,7 @@ static void begin_chord_move(struct server *server) {
 	begin_move(server, tl, ref_x, ref_y);
 	move_toplevel_to(server, server->cursor->x, server->cursor->y);
 	server->chord_moving = true;
-	update_cursor_style(server); /* "grabbing" */
+	update_cursor_style(server); /* CONFIG_MOVE_CURSOR */
 }
 
 static void disarm_chord_timer(struct server *server) {
@@ -869,6 +878,26 @@ static void process_chord_button(struct server *server, uint32_t time_msec,
 /* cursor event processing                                            */
 /* ------------------------------------------------------------------ */
 
+/* surface-local coordinates of a layout point for a toplevel's surface,
+ * even when the point lies outside the surface (used to keep forwarding
+ * motion to the grabbed surface during an implicit grab).  Returns false
+ * when the surface is not a toplevel surface. */
+static bool toplevel_surface_coords(struct server *server,
+		struct wlr_surface *surface, double lx, double ly,
+		double *sx, double *sy) {
+	struct toplevel *tl;
+	wl_list_for_each(tl, &server->toplevels, link) {
+		struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
+		if (base == NULL || base->surface != surface) {
+			continue;
+		}
+		*sx = lx - tl->scene_tree->node.x + base->geometry.x;
+		*sy = ly - tl->scene_tree->node.y + base->geometry.y;
+		return true;
+	}
+	return false;
+}
+
 static void process_cursor_motion(struct server *server, uint32_t time_msec) {
 	if (server->drag_tree != NULL) {
 		wlr_scene_node_set_position(&server->drag_tree->node,
@@ -959,6 +988,30 @@ static void process_cursor_motion(struct server *server, uint32_t time_msec) {
 		}
 	}
 
+	/* implicit grab: a client holds a pointer button (e.g. text selection).
+	 * Keep the pointer focused on the grabbed surface and keep forwarding
+	 * motion to it, without switching focus or changing the cursor, until
+	 * the button is released. */
+	if (server->seat->pointer_state.button_count > 0) {
+		struct wlr_surface *focused =
+			server->seat->pointer_state.focused_surface;
+		if (focused != NULL) {
+			if (surface == focused) {
+				wlr_seat_pointer_notify_motion(server->seat, time_msec,
+					sx, sy);
+			} else {
+				double gx, gy;
+				if (toplevel_surface_coords(server, focused,
+						server->cursor->x, server->cursor->y,
+						&gx, &gy)) {
+					wlr_seat_pointer_notify_motion(server->seat, time_msec,
+						gx, gy);
+				}
+			}
+		}
+		return;
+	}
+
 	if (server->seat->pointer_state.focused_surface != surface) {
 		clear_cursor_override(server);
 		wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,
@@ -1044,7 +1097,7 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 					button, state);
 				wlr_seat_pointer_notify_frame(server->seat);
 			}
-			/* don't leave the cursor stuck on "grabbing" after the release */
+			/* don't leave the cursor stuck on the move cursor after the release */
 			update_cursor_style(server);
 			return;
 		}
@@ -1091,12 +1144,33 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 			return;
 		}
 		wlr_seat_pointer_notify_button(server->seat, time_msec, button, state);
+		/* the held button (e.g. a text-selection drag) is released now:
+		 * re-run the motion path so focus and the compositor cursor are
+		 * re-evaluated at the current pointer position (the implicit grab
+		 * kept them pinned to the grabbed surface while the button was
+		 * held) */
+		process_cursor_motion(server, time_msec);
 		return;
 	}
 
 	/* WLR_BUTTON_PRESSED */
 	if (server->moving || server->zone_press || server->resizing) {
 		return; /* already grabbed */
+	}
+
+	/* an implicit grab is active: a previous press was forwarded to the
+	 * client and is still held (buttons > 0). Forward this press too
+	 * instead of hijacking it for a resize/move grab, so the client sees
+	 * the whole multi-button gesture and the cursor stays under the
+	 * implicit-grab rules. */
+	if (server->seat->pointer_state.button_count > 0) {
+		struct toplevel *tl = toplevel_nearby(server);
+		if (tl != NULL && !tl->minimized) {
+			focus_toplevel(server, tl);
+		}
+		wlr_seat_pointer_notify_button(server->seat, time_msec, button,
+			state);
+		return;
 	}
 
 	struct toplevel *tl = toplevel_nearby(server);

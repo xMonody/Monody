@@ -53,6 +53,13 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server,
 		seat_request_set_cursor);
 	struct wlr_seat_pointer_request_set_cursor_event *event = data;
+	/* implicit grab: while a client holds a pointer button (e.g. text
+	 * selection), the cursor is frozen at whatever it was when the grab
+	 * started; ignore mid-drag cursor changes from the client (e.g. a CSD
+	 * client switching to its own resize cursor near the edge) */
+	if (server->seat->pointer_state.button_count > 0) {
+		return;
+	}
 	if (event->seat_client == server->seat->pointer_state.focused_client) {
 		/* a cursor surface supersedes any previously set cursor shape
 		 * (clients mixing both protocols: the last request wins) */
@@ -119,6 +126,13 @@ void seat_request_set_shape(struct wl_listener *listener, void *data) {
 	if (event->device_type !=
 			WLR_CURSOR_SHAPE_MANAGER_V1_DEVICE_TYPE_POINTER) {
 		return; /* no tablet support in this compositor */
+	}
+	/* implicit grab: while a client holds a pointer button (e.g. text
+	 * selection), the cursor is frozen at whatever it was when the grab
+	 * started; ignore mid-drag cursor changes from the client (e.g. a CSD
+	 * client switching to its own resize cursor near the edge) */
+	if (server->seat->pointer_state.button_count > 0) {
+		return;
 	}
 	if (event->seat_client != server->seat->pointer_state.focused_client) {
 		return;

@@ -359,6 +359,14 @@ dependency on a wlroots build tree):
   cursor-shape global, sets a shape on the pointer and drives the pointer
   into a window to check the compositor renders it and restores it after an
   override.
+* `test-select-drag.c` + `test-select-drag.sh` — regression test for the
+  implicit pointer grab: a terminal-like client sets the text cursor, then
+  the RIGHT button is held and the virtual pointer is dragged to the left /
+  top / bottom edges (and LEFT is pressed at an edge while RIGHT is held).
+  While any button is held the compositor must keep the client's cursor
+  (never the edge-resize / title-strip hover cursors) and must freeze the
+  client's mid-drag cursor-shape requests.  Run with `./test-select-drag.sh`
+  (auto-asserts PASS/FAIL against the compositor's `WLR_DEBUG` log).
 * `test-bar-clamp.c` — layer-shell bars (top/bottom, NULL-output and
   per-output) + a virtual pointer: verifies a dragged window can never
   slide underneath a status bar, and that its top never goes closer than

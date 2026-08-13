@@ -13,7 +13,10 @@
 
 #include <wlr/types/wlr_keyboard.h>
 
-#define CONFIG_TITLEBAR_CURSOR "all-scroll" /* cursor shown while hovering the title strip */
+#define CONFIG_CURSOR_THEME    "Adwaita"      /* cursor theme  */
+#define CONFIG_TITLEBAR_CURSOR "pointer"      /* cursor shown while hovering the title strip */
+#define CONFIG_MOVE_CURSOR     "all-scroll"   /* cursor shown while dragging (moving) a window */
+
 #define CONFIG_BORDER_WIDTH     1.5         /* 边框可见粗细 */
 #define CONFIG_BORDER_RADIUS    8           /* 边框圆角 (px) */
 #define CONFIG_TITLEBAR_HEIGHT  8           /* 移动窗口边框范围 */
