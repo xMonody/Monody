@@ -1,4 +1,4 @@
-# qt6-bar
+# xmonodybar
 
 A floating taskbar (status bar) for Wayland compositors, written in
 **Qt 6 + Qt Quick (QML) + wlr-layer-shell** (`layer-shell-qt`).
@@ -75,14 +75,15 @@ A small dot in the bottom-right corner is green when connected, red otherwise.
 
 ```bash
 # deps (Debian/Ubuntu): qt6-base-dev, qt6-declarative-dev, qt6-wayland,
-#                       libqt6network6, liblayershellqtinterface6, layer-shell-qt
+#                       libqt6network6, liblayershellqtinterface-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-The project links against the layer-shell-qt **runtime** library directly
-(`libLayerShellQtInterface.so.6`); the public headers are vendored in
-`3rdparty/LayerShellQt/`. No layer-shell-qt dev package is required.
+The layer-shell-qt **dev** package (`liblayershellqtinterface-dev`) provides the
+public headers and the CMake package config, so the project uses
+`find_package(LayerShellQt)` / `LayerShellQt::Interface` instead of vendoring
+headers.
 
 ## Run
 
@@ -90,7 +91,7 @@ Run it inside your Wayland session (the compositor must implement
 `wlr-layer-shell`, e.g. sway / hyprland / river / wayfire):
 
 ```bash
-./build/qt6-bar
+./build/xmonodybar
 ```
 
 `Shell::useLayerShell()` switches the Qt Wayland shell integration to
@@ -126,6 +127,5 @@ src/BarController.cpp   socket client, window model, icon lookup
 src/IconFinder.cpp      XDG icon-theme lookup (returns file:// URLs)
 src/IconProvider.cpp    image://icons provider; SVG rendering via gdk-pixbuf
 qml/main.qml            taskbar UI (Win11 style)
-3rdparty/LayerShellQt   vendored public headers of layer-shell-qt
 scripts/mock_compositor.py
 ```

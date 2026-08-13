@@ -28,7 +28,7 @@ static QString defaultSocketPath()
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
-    QCoreApplication::setApplicationName(QStringLiteral("qt6-bar"));
+    QCoreApplication::setApplicationName(QStringLiteral("xmonodybar"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0"));
 
     QCommandLineParser parser;
@@ -113,7 +113,7 @@ int main(int argc, char *argv[])
             shell->setMargins(QMargins(0, 0, 0, 0));
             shell->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
             shell->setExclusiveZone(0);
-            shell->setScope(QStringLiteral("qt6-bar-launcher"));
+            shell->setScope(QStringLiteral("xmonodybar-launcher"));
         }
     } else {
         qWarning() << "launcher window not found";

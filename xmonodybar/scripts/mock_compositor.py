@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mock compositor for testing qt6-bar, following the xmonodywm IPC protocol:
+Mock compositor for testing xmonodybar, following the xmonodywm IPC protocol:
 
   compositor -> bar (newline-delimited JSON):
     {"event":"window_list","windows":[{"id":1,"app_id":"firefox"}],
