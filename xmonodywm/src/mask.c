@@ -14,7 +14,7 @@
  *
  * The pass re-runs on every surface commit that carries a buffer, so
  * animations and damage updates stay current.  It uses the same raw-GL-on-
- * wlroots'-EGL-context approach as border.c and blur.c.  The client
+ * wlroots'-EGL-context approach as border.c.  The client
  * buffer's scale is handled by sampling the texture with normalized
  * coordinates; 90-degree transformed buffers are not supported (the
  * compositor never receives them in practice).

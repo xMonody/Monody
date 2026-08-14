@@ -31,9 +31,6 @@ static void monitor_frame(struct wl_listener *listener, void *data) {
 	struct monitor *mon = wl_container_of(listener, mon, frame);
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	/* refresh the blurred backdrops of transparent windows before the
-	 * scene is committed, so this frame already shows the new blur */
-	blur_refresh_output(mon->server, mon->scene_output);
 	if (!wlr_scene_output_commit(mon->scene_output, NULL)) {
 		return;
 	}

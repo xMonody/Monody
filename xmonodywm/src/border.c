@@ -403,9 +403,6 @@ static void border_clear_buffer(struct toplevel *tl) {
 
 /* (re)build the rounded border around the toplevel and position it */
 void update_toplevel_decoration(struct toplevel *tl) {
-	/* the blur backdrop follows the same geometry rules as the border */
-	blur_toplevel_update(tl);
-
 	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
 	if (tl->deco_border == NULL || base == NULL) {
 		return;

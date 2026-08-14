@@ -12,7 +12,6 @@
  *   scene.c    - scene-graph tagging / hit-testing
  *   toplevel.c - xdg-shell windows, window state, decorations
  *   border.c   - rounded server-side border for undecorated windows
- *   blur.c     - GLSL gaussian background blur for transparent windows
  *   layer.c    - wlr-layer-shell surfaces + work area
  *   output.c   - monitors + wlr-output-management
  *   input.c    - seat, keyboard, shortcuts
@@ -480,7 +479,6 @@ int main(int argc, char *argv[]) {
 	wl_list_remove(&server.seat_start_drag.link);
 
 	ipc_server_destroy(&server);
-	blur_finish(&server);
 	wl_display_destroy_clients(server.display);
 	wl_display_destroy(server.display);
 	return EXIT_SUCCESS;

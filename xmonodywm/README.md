@@ -22,16 +22,6 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
   seam.  The **focused window's border gets a Windows-11-style soft glow**
   (`CONFIG_BORDER_GLOW_SIZE` px of the border color fading out past the
   ring); inactive windows are never glowed.
-* **Transparent windows get a gaussian-blurred backdrop** (frosted glass).
-  When a window commits a buffer that actually contains semi-transparent
-  pixels (terminal emulators with a transparent background, e.g. `foot`,
-  `kitty`, `alacritty`), the compositor renders the scene *behind* the window
-  into a private snapshot (a `wlr_scene_output_build_state` pass with its own
-  swapchain), runs a separable gaussian blur on the GPU — two GLES2 passes,
-  horizontal then vertical, on a 3x-downscaled intermediate — and places the
-  result behind the window content, so the backdrop stays sharp-free and
-  tracks moving windows, wallpaper and the window itself.  The blur is purely
-  GLSL, same as the rounded border; opaque windows are never touched.
 * **Client-side decorated** windows (mode `CLIENT_SIDE` via xdg-decoration, or
   apps with their own header bars) keep their native controls: the client's own
   title bar moves the window through `xdg_toplevel.move`, its buttons work, its
@@ -111,7 +101,7 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 | `wp_cursor_shape_manager_v1` | clients pick a cursor shape; the compositor renders it from its own xcursor theme at the output's (fractional) scale, so the size always matches — no client-side guessing |
 | `xdg_activation_v1` | client-driven window activation/focus; activation requests focus (and restore) the matching toplevel |
 | `wp_fractional_scale_v1` | surfaces are told the output's exact fractional scale; toplevels get the notification through their masked scene buffer |
-| `wp_linux_drm_syncobj_manager_v1` | explicit buffer synchronization via DRM syncobj timelines; custom mask/blur GL passes wait on acquire points, release points are tied to the masked buffer |
+| `wp_linux_drm_syncobj_manager_v1` | explicit buffer synchronization via DRM syncobj timelines; the custom mask GL pass waits on acquire points, release points are tied to the masked buffer |
 | `zwp_input_method_v2` | input method (fcitx5/ibus) — activation, keyboard grab, preedit/commit |
 | `zwp_text_input_v3` | per-window text input — enter/leave, surrounding text, commit string |
 
@@ -121,14 +111,13 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 
 ```
 src/
-  config.h    all tunables: shortcuts, border radius, blur toggle, edge grab zone
+  config.h    all tunables: shortcuts, border radius, edge grab zone
   server.h    shared structs (server/toplevel/layer_surface) + cross-module API
   main.c      entry point: display/backend/scene setup, protocol globals, run loop
   ipc.c/h     status-bar socket (JSON over a Unix domain socket)
   scene.c     scene-graph tagging / hit-testing helpers
   toplevel.c  xdg-shell windows, window state (max/min/fullscreen), decorations
   border.c    rounded server-side border for undecorated windows
-  blur.c      GLSL gaussian background blur for transparent windows
   layer.c     wlr-layer-shell surfaces + work area
   output.c    monitors, output layout, wlr-output-management
   input.c     seat, keyboard, compositor shortcuts
@@ -269,7 +258,6 @@ Everything tunable lives in **`src/config.h`** (edit and rebuild):
 | `CONFIG_TITLEBAR_HEIGHT` | colored title strip at the window top (px) | `10` |
 | `CONFIG_LONG_PRESS_NS` | holding the strip this long grabs the window for moving (ns) | `350 ms` |
 | `CONFIG_WHEEL_DEBOUNCE_ENABLED` / `CONFIG_WHEEL_BURST_NS` / `CONFIG_WHEEL_TICK_GAP_NS` | right-hold + wheel: coalesce rapid ticks (bool) / one continuous scroll = one action for at most this long / two ticks this far apart = next action | `true` / `800 ms` / `300 ms` |
-| `CONFIG_BLUR_ENABLED` | `true`: GLSL gaussian blur behind transparent windows, `false`: sharp backdrop | `true` |
 | `CONFIG_MOD_MAIN` / `CONFIG_KEY_*` | shortcut modifier combo / keysyms (see below) | `Shift+Alt` |
 
 ## Shortcuts

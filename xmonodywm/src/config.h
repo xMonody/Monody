@@ -2,8 +2,7 @@
  * config.h - compile-time configuration for xmonodywm
  *
  * All the tunables live here: window decorations (rounded border), the
- * resize/move grab zone, the background blur behind transparent windows
- * and the compositor keyboard shortcuts.  Edit the values and rebuild.
+ * resize/move grab zone, and the compositor keyboard shortcuts.  Edit the values and rebuild.
  */
 
 #ifndef XMONODYWM_CONFIG_H
@@ -55,8 +54,6 @@
 #define CONFIG_WHEEL_DEBOUNCE_ENABLED false /* 控制是否启用骚鼠标 */
 #define CONFIG_WHEEL_BURST_NS (800 * 1000000L)   /* one continuous scroll: max length = one action (0.8 s) */
 #define CONFIG_WHEEL_TICK_GAP_NS (300 * 1000000L) /* two ticks this far apart = next action (0.3 s) */
-
-#define CONFIG_BLUR_ENABLED true               /* 控制透明窗口是否启用阴影 */
 
 /* 新窗口放置 (place.c): 创建时大小完全尊重客户端, 位置在屏幕上左右上下居中.
  * 默认以整个屏幕为基准严格居中; 设为 1 时改为以工作区为基准

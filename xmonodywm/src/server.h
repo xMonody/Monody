@@ -11,7 +11,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
-/* all tunables (shortcuts, border radius, blur, edge grab zone) */
+/* all tunables (shortcuts, border radius, edge grab zone) */
 #include "config.h"
 
 #include <stdbool.h>
@@ -201,14 +201,6 @@ struct toplevel {
 	struct wl_listener mask_frame;
 	struct wl_listener new_subsurface;
 
-
-	/* GLSL gaussian blur behind transparent windows (terminal emulators);
-	 * deco_blur sits in deco_tree behind the content and holds the blurred
-	 * backdrop, blur_enabled tracks whether the committed buffer really
-	 * contains semi-transparent pixels */
-	struct wlr_scene_buffer *deco_blur;
-	bool blur_enabled;
-
 	/* xdg-decoration */
 	struct wlr_xdg_toplevel_decoration_v1 *decoration;
 	enum wlr_xdg_toplevel_decoration_v1_mode decoration_mode;
@@ -355,11 +347,6 @@ struct server {
 	struct wl_event_source *ipc_source;
 	struct wl_list ipc_clients; /* ipc_client.link */
 	uint32_t next_window_id;
-
-	/* blur module: swapchain used to snapshot the scene behind a window
-	 * (sized to the output it was created for) */
-	struct wlr_swapchain *blur_swapchain;
-	int blur_swapchain_w, blur_swapchain_h;
 
 	struct wlr_scene_tree *drag_tree;
 
@@ -513,14 +500,6 @@ struct wlr_buffer *border_alloc_buffer(struct server *server,
 bool border_render_ring(struct server *server, struct wlr_buffer *buffer,
 	int width, int height, uint32_t color, float ring_width);
 
-/* ---- blur.c: GLSL gaussian background blur for transparent windows ---- */
-void blur_toplevel_init(struct toplevel *tl);
-void blur_toplevel_commit(struct toplevel *tl);
-void blur_toplevel_update(struct toplevel *tl);
-void blur_refresh_output(struct server *server,
-	struct wlr_scene_output *scene_output);
-void blur_finish(struct server *server);
-
 /* ---- mask.c: rounded-corner clipping of window content ---- */
 struct wlr_buffer *content_mask_buffer(struct server *server,
 	int width, int height);
@@ -530,7 +509,7 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 void mask_toplevel_content(struct toplevel *tl);
 void mask_toplevel_destroy(struct toplevel *tl);
 /* Wait on a surface's explicit-sync acquire point before sampling its
- * buffer in a custom GL pass (mask.c, blur.c).  Returns true when there
+ * buffer in a custom GL pass (mask.c).  Returns true when there
  * is nothing to wait for or the GPU-side wait succeeded. */
 bool mask_wait_syncobj_acquire(struct server *server,
 	struct wlr_surface *surface);

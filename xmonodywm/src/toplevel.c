@@ -758,7 +758,6 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 
 	/* geometry (and thus the border and the resize/title zones under the
 	 * cursor) may have changed */
-	blur_toplevel_commit(tl);
 	/* rounded-corner masked content tracks the latest committed buffer */
 	mask_toplevel_content(tl);
 	/* keep a fresh window centered until the user interacts with it:
@@ -1521,10 +1520,8 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 		free(tl);
 		return;
 	}
-	/* blur node goes at the bottom of the decoration tree, below the
-	 * content, so the blurred backdrop shines through transparent
-	 * backgrounds */
-	blur_toplevel_init(tl);
+	/* the window content tree is a child of the decoration tree, so it
+	 * stays above the border */
 	tl->scene_tree = wlr_scene_tree_create(tl->deco_tree);
 	if (tl->scene_tree == NULL) {
 		wlr_scene_node_destroy(&tl->deco_tree->node);
