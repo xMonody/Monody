@@ -29,7 +29,6 @@
 #include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output_management_v1.h>
-#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_text_input_v3.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -61,6 +60,9 @@ struct scene_tag {
 
 	struct wl_listener destroy; /* frees the tag when the node is destroyed */
 };
+
+/* scenefx's scene-graph API (rounded corners, shadows, borders) */
+#include <scenefx/types/wlr_scene.h>
 
 struct ipc_client;     /* defined in ipc.c */
 struct wlr_swapchain;  /* defined in wlr/render/swapchain.h */
@@ -117,49 +119,32 @@ struct text_input {
 	struct wl_listener commit;
 };
 
-/* a manually managed subsurface tree under a toplevel's content tree
- * (wlr_scene_xdg_surface cannot be used because the content buffer is
- * re-rendered through the rounded mask instead) */
-struct mask_subsurface {
+/* a subsurface of a toplevel's surface (Firefox/Chromium cover the window
+ * edges with subsurfaces); its commit re-applies the rounded-corner mask so
+ * the subsurface corners that reach the window's outer corners are rounded */
+struct toplevel_subsurface {
 	struct toplevel *tl;
 	struct wlr_subsurface *subsurface;
-	struct wlr_scene_tree *tree;
 	struct wl_list link; /* tl->subsurfaces */
+	struct wl_listener commit;
 	struct wl_listener destroy;
 };
 
-/* a manually managed xdg popup under a toplevel's content tree: the popup
- * surface (and its subsurfaces) is rendered through a wlr_scene_xdg_surface
- * tree so popups show above the window and receive input; nested popups
- * (Qt submenus) attach through the same handler via this popup's own
- * new_popup signal. */
-struct mask_popup {
+/* an xdg popup (menu / tooltip / combo box) under a toplevel's content
+ * tree; rendered with wlr_scene_xdg_surface_create so subsurfaces are
+ * handled and nested popups (Qt submenus) attach recursively.  The struct's
+ * lifetime is tied to pp->tree: wlroots destroys the tree when the popup's
+ * xdg surface is destroyed (or with the toplevel's tree), and
+ * tree_destroy then frees pp - so popups never outlive the toplevel. */
+struct toplevel_popup {
 	struct toplevel *tl;
 	struct wlr_xdg_popup *popup;
 	struct wlr_scene_tree *tree;
-	/* rounded-corner masked content (mask.c), exactly like a toplevel:
-	 * the popup surface's buffer is re-rendered through the alpha mask, so
-	 * the popup corners get CONFIG_BORDER_RADIUS like the windows */
-	struct wlr_scene_buffer *masked;
-	/* buffer the popup mask was last rendered from (re-render guard) */
-	struct wlr_client_buffer *mask_buf;
-	/* the popup's thin rounded ring (border.c): outlines the rounded
-	 * corners so they stay visible even when popup content and the
-	 * background share a color (a white menu over a white window) */
-	struct wlr_scene_buffer *deco_border;
-	int deco_w, deco_h;               /* ring buffer size */
-	uint32_t deco_color;              /* ring color the buffer was rendered with */
-	struct wl_list subsurfaces;       /* struct mask_subsurface.link */
-	struct wl_list link;              /* tl->popups */
+	struct wlr_scene_rect *border;    /* thin rounded ring (scenefx) */
+	struct wl_listener tree_destroy;  /* frees pp when the tree is destroyed */
 	struct wl_listener commit;
 	struct wl_listener new_popup;
 	struct wl_listener destroy;
-	struct wl_listener xdg_destroy;
-	struct wl_listener new_subsurface;
-	struct wl_listener mask_enter;
-	struct wl_listener mask_leave;
-	struct wl_listener mask_sample;
-	struct wl_listener mask_frame;
 };
 
 struct toplevel {
@@ -169,53 +154,25 @@ struct toplevel {
 	struct wlr_foreign_toplevel_handle_v1 *fthandle;
 	struct wlr_output *last_output;
 
-	/* server-side decoration (rounded border); the content tree lives inside
-	 * deco_tree so the border stays glued to the window when raised */
-	struct wlr_scene_tree *deco_tree;
-	struct wlr_scene_buffer *deco_border;
-	int deco_w, deco_h;               /* border buffer size */
-	uint32_t deco_color;              /* border color the buffer was rendered with */
-	bool deco_focused;                /* whether the buffer was rendered with the focus glow */
-	bool deco_dialog;                 /* whether the buffer was rendered as a dialog top band */
-	bool deco_unified;                /* whether the buffer was rendered with the unified (non-segmented) top strip */
-
-	/* whether the border/interaction box wraps the committed surface
-	 * instead of the xdg window geometry: set by the rounded-mask pass
-	 * (mask.c) when the surface extends beyond the geometry with opaque
-	 * pixels (clients like QQ's login window report a geometry smaller
-	 * than what they actually draw).  When the extra area is a
-	 * transparent drop shadow (Firefox/GTK CSD) this stays false and the
-	 * geometry - the window bounds per xdg-shell - is used. */
-	bool wrap_surface;
-
-	/* mask re-render cache (mask.c): `mask_buf`/`mask_geom` are the
-	 * buffer and geometry the masked content was last rendered from, so a
-	 * commit that neither attaches a new buffer nor damages the surface
-	 * nor moves the geometry can skip the whole pass (no buffer
-	 * allocation, no GL, no texture upload).  `wrap_probe_buf`/
-	 * `wrap_probe_geom` are the key the wrap_surface margin verdict was
-	 * computed for: the probe (glReadPixels) only re-runs when the buffer
-	 * or the geometry changes, not on every re-render of the same
-	 * buffer. */
-	struct wlr_client_buffer *mask_buf;
-	struct wlr_box mask_geom;
-	struct wlr_client_buffer *wrap_probe_buf;
-	struct wlr_box wrap_probe_geom;
-
-	/* rounded-corner masked content: the client's buffer re-rendered through
-	 * an alpha mask (mask.c) into `masked`; the xdg surface's own scene
-	 * node is replaced by this buffer, so output/frame events are forwarded
-	 * to the client surface here.  Subsurfaces get their own scene trees
-	 * (struct mask_subsurface). */
-	struct wlr_scene_buffer *masked;
-	struct wl_list subsurfaces;       /* struct mask_subsurface.link */
-	struct wl_list popups;            /* struct mask_popup.link */
-	struct wl_listener mask_outputs_update;
-	struct wl_listener mask_enter;
-	struct wl_listener mask_leave;
-	struct wl_listener mask_sample;
-	struct wl_listener mask_frame;
-	struct wl_listener new_subsurface;
+	/* scenefx decorations: a rounded border ring (wlr_scene_rect with a
+	 * clipped hole) and a soft shadow (wlr_scene_shadow) live inside
+	 * scene_tree, lowered below the content */
+	struct wlr_scene_rect *border;
+	struct wlr_scene_shadow *shadow;
+	uint32_t border_color;            /* color the border was last set to */
+	/* subsurfaces of the window surface (their commits re-apply the corner
+	 * radius); cleaned up together with the toplevel */
+	struct wl_list subsurfaces;      /* struct toplevel_subsurface.link */
+	/* popups are scene-tree children of scene_tree and clean themselves up
+	 * when their tree is destroyed, so no explicit popup list is needed */
+	/* the ring's top edge: a smooth three-color gradient band (minimize /
+	 * maximize-restore / close, with blended seams) rendered by scenefx's
+	 * gradient pass into a small texture stretched over the top band */
+	struct wlr_scene_buffer *band;
+	bool band_rendered;        /* gradient buffer has been rendered */
+	int band_width;            /* band width the gradient was rendered for */
+	uint32_t band_colors[3];   /* segment colors the gradient was rendered with */
+	uint32_t band_base;        /* ring color the gradient ends fade into */
 
 	/* xdg-decoration */
 	struct wlr_xdg_toplevel_decoration_v1 *decoration;
@@ -265,6 +222,7 @@ struct toplevel {
 	struct wl_listener set_title;
 	struct wl_listener set_app_id;
 	struct wl_listener new_popup;
+	struct wl_listener new_subsurface;
 
 	struct wl_listener ft_request_maximize;
 	struct wl_listener ft_request_minimize;
@@ -471,6 +429,9 @@ void xdg_surface_tag(struct wlr_scene_tree *tree, enum scene_tag_type type,
 void *scene_tag_at(struct server *server, enum scene_tag_type type,
 	double lx, double ly);
 struct toplevel *toplevel_at(struct server *server);
+/* the cursor is over a popup surface (menu / dropdown / tooltip): the popup
+ * wins the pointer over the compositor frame (resize edges, title strip) */
+bool pointer_over_popup(struct server *server);
 /* a dialog / transient window (declared a parent toplevel via
  * xdg_toplevel.set_parent, as GTK/Qt dialogs do): not resizable, no
  * maximize/minimize, its top border is a single close button */
@@ -503,33 +464,12 @@ void maximized_box(struct server *server, struct wlr_output *output,
 	struct wlr_box *box);
 void server_new_toplevel(struct wl_listener *listener, void *data);
 void server_new_decoration(struct wl_listener *listener, void *data);
+/* (re)build the scenefx border/shadow around the toplevel */
+void update_toplevel_decoration(struct toplevel *tl);
 
 /* ---- place.c: initial window placement ----
  * size fully client-driven, position centered on the output (screen) */
 bool place_toplevel(struct server *server, struct toplevel *tl);
-
-/* ---- border.c: rounded server-side border ---- */
-bool border_buffer_no_input(struct wlr_scene_buffer *buffer,
-	double *sx, double *sy);
-void update_toplevel_decoration(struct toplevel *tl);
-struct wlr_buffer *border_alloc_buffer(struct server *server,
-	int width, int height);
-bool border_render_ring(struct server *server, struct wlr_buffer *buffer,
-	int width, int height, uint32_t color, float ring_width);
-
-/* ---- mask.c: rounded-corner clipping of window content ---- */
-struct wlr_buffer *content_mask_buffer(struct server *server,
-	int width, int height);
-bool content_mask_render(struct server *server, struct wlr_surface *surface,
-	struct wlr_buffer *dst, int width, int height, float radius,
-	const struct wlr_box *geom, bool geom_clip, bool *margin_opaque);
-void mask_toplevel_content(struct toplevel *tl);
-void mask_toplevel_destroy(struct toplevel *tl);
-/* Wait on a surface's explicit-sync acquire point before sampling its
- * buffer in a custom GL pass (mask.c).  Returns true when there
- * is nothing to wait for or the GPU-side wait succeeded. */
-bool mask_wait_syncobj_acquire(struct server *server,
-	struct wlr_surface *surface);
 
 /* ---- layer.c: wlr-layer-shell + work area ---- */
 void get_work_area(struct server *server, struct wlr_output *output,

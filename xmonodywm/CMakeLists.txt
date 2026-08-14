@@ -11,13 +11,12 @@ add_compile_definitions(WLR_USE_UNSTABLE)
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(WLROOTS REQUIRED IMPORTED_TARGET wlroots-0.19)
+pkg_check_modules(SCENEFX REQUIRED IMPORTED_TARGET scenefx-0.4)
 pkg_check_modules(WAYLAND_SERVER REQUIRED IMPORTED_TARGET wayland-server)
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
 pkg_check_modules(PIXMAN REQUIRED IMPORTED_TARGET pixman-1)
-pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
-pkg_check_modules(GLES2 REQUIRED IMPORTED_TARGET glesv2)
 pkg_check_modules(LIBINPUT REQUIRED IMPORTED_TARGET libinput)
 
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -115,8 +114,6 @@ set(COMPOSITOR_SOURCES
 	src/scene.c
 	src/ime.c
 	src/toplevel.c
-	src/border.c
-	src/mask.c
 	src/place.c
 	src/layer.c
 	src/output.c
@@ -145,12 +142,11 @@ target_include_directories(xmonodywm PRIVATE
 	${PROTOCOL_GEN_DIR} # wlroots' installed headers #include generated ones
 )
 target_link_libraries(xmonodywm PRIVATE
+	PkgConfig::SCENEFX
 	PkgConfig::WLROOTS
 	PkgConfig::WAYLAND_SERVER
 	PkgConfig::XKBCOMMON
 	PkgConfig::CJSON
-	PkgConfig::EGL
-	PkgConfig::GLES2
 	PkgConfig::LIBINPUT
 	PkgConfig::PIXMAN
 	m
@@ -191,14 +187,14 @@ add_executable(test-resize-cursor test-resize-cursor.c)
 target_include_directories(test-resize-cursor PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-resize-cursor PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
 
-# mask-guard test: verifies the rounded-mask pass skips commits that leave
-# the content untouched (no attach, no damage) and re-runs on new buffers
+# mask-guard test: (obsolete) the custom rounded-mask pass was replaced by
+# scenefx; kept as a plain client commit smoke test
 add_executable(test-mask-guard test-mask-guard.c)
 target_include_directories(test-mask-guard PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-mask-guard PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
 
 # border test: two toplevels + focus switches (repaint focused/unfocused
-# border colors); smoke test for the GLES2 border re-render path
+# scenefx border colors)
 add_executable(test-bar-clamp test-bar-clamp.c)
 target_include_directories(test-bar-clamp PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-bar-clamp PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)

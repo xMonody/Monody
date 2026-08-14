@@ -21,7 +21,7 @@
 
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_pointer.h>
-#include <wlr/types/wlr_scene.h>
+#include <scenefx/types/wlr_scene.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/edges.h>
 #include <wlr/util/log.h>
@@ -31,6 +31,11 @@
  * CONFIG_TITLEBAR_HEIGHT px of the content, split into three colored
  * segments (minimize / maximize / close). */
 static bool is_in_titlebar_zone(struct server *server, struct toplevel *tl) {
+	/* a popup (menu / dropdown) floating over the strip wins the pointer:
+	 * no move / minimize / maximize / close grab while the cursor is on it */
+	if (pointer_over_popup(server)) {
+		return false;
+	}
 	if (tl->decoration_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE &&
 			!toplevel_is_dialog(tl) && !toplevel_is_fixed_size(tl)) {
 		return false; /* client draws its own title bar, use it natively */
@@ -327,6 +332,12 @@ static void arm_zone_timer(struct server *server) {
  * window is never resized here. */
 static uint32_t toplevel_resize_edges(struct server *server,
 		struct toplevel *tl) {
+	/* a popup covering the window's border wins the pointer: no resize
+	 * handle while the cursor is over it (the popup is the focused
+	 * surface and its clicks must reach the menu, not a resize grab) */
+	if (pointer_over_popup(server)) {
+		return 0;
+	}
 	if (tl->minimized || tl->xdg_toplevel->base == NULL ||
 			tl->decoration_mode ==
 				WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE ||

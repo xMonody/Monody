@@ -60,3 +60,29 @@ struct toplevel *toplevel_at(struct server *server) {
 	return scene_tag_at(server, TAG_TOPLEVEL, server->cursor->x,
 		server->cursor->y);
 }
+
+/* is the cursor over a popup (menu / dropdown / tooltip) surface?  A popup
+ * floats above its parent toplevel, so a popup covering the window's border
+ * wins the pointer: the compositor's frame grabs (resize edges, title
+ * strip) are disabled there and the click reaches the popup instead of
+ * starting a resize.  scene_tag_at() deliberately walks up past TAG_POPUP
+ * to find the owning window, so the popup itself is detected with an
+ * explicit hit test instead. */
+bool pointer_over_popup(struct server *server) {
+	double sx, sy;
+	struct wlr_scene_node *node = wlr_scene_node_at(
+		&server->scene->tree.node, server->cursor->x, server->cursor->y,
+		&sx, &sy);
+	if (node == NULL) {
+		return false;
+	}
+	struct wlr_scene_node *n = node;
+	while (n != NULL) {
+		if (n->data != NULL) {
+			struct scene_tag *tag = n->data;
+			return tag->type == TAG_POPUP;
+		}
+		n = n->parent != NULL ? &n->parent->node : NULL;
+	}
+	return false;
+}

@@ -21,37 +21,43 @@
 #define CONFIG_TITLEBAR_HEIGHT  8           /* 移动窗口边框范围 */
 #define CONFIG_EDGE_THICKNESS   8           /* 调整窗口大小边框范围 */
 
-#define CONFIG_BORDER_OVERLAP    0.5          /* 边框在窗口内边缘宽度 */
-#define CONFIG_MAXIMIZED_GAP     1            /* 边框和屏幕间距 */
+#define CONFIG_MAXIMIZED_GAP     0.5            /* 边框和屏幕间距 */
 #define CONFIG_MAXIMIZED_GAP_BAR 0.5          /* 边框和状态栏间距 */
-#define CONFIG_BAR_TOP_OVERLAP   1            /* 窗口顶部相对状态栏的偏移(px) */
+#define CONFIG_BAR_TOP_OVERLAP   0.5            /* 窗口顶部相对状态栏的偏移(px) */
 
 #define CONFIG_FULLSCREEN_BORDER_COLOR  0xFF87BEAAu /* 全屏窗口的边框颜色  */
-#define CONFIG_FULLSCREEN_GAP    1                  // 全屏窗口与屏幕边缘的间距 (px)
-#define CONFIG_MAXIMIZED_BORDER_ENABLED 1           /* 最大化时是否显示边框 */
+#define CONFIG_FULLSCREEN_GAP          1.5          // 全屏窗口与屏幕边缘的间距 (px)
+#define CONFIG_MAXIMIZED_BORDER_ENABLED 1.5         /* 最大化时是否显示边框 */
 
 #define CONFIG_BORDER_COLOR           0xFF676E95u   /* 0xFF7C73B0u  活动窗口 (#7C73B0) */
 #define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u   /*  非活动窗口(#676E95) */
 
+/* 顶部边框三段颜色: 左(最小化) / 中(最大化/还原) / 右(关闭) */
+#define CONFIG_BORDER_COLOR_MIN   0xFFF5A3A3u   /* 左段: 最小化 (#f5a3a3) */
+#define CONFIG_BORDER_COLOR_MAX   0xFF87BEAAu   /* 中段: 最大化/还原 (#87beaa) */
+#define CONFIG_BORDER_COLOR_CLOSE 0xFFD55F6Fu   /* 右段: 关闭 (#d55f6f) */
+
+#define CONFIG_BORDER_BAND_BLEND 10   /* 顶部三段色拼接处的渐变宽度 (px) */
+
 /* popup (菜单/提示框/下拉框) 边框 */
-#define CONFIG_POPUP_BORDER_WIDTH  1            /* popup 边框宽度 (px) */
-#define CONFIG_POPUP_BORDER_COLOR  0xFF676E95u    /* popup 边框颜色, 0xAARRGGBB */
+#define CONFIG_POPUP_BORDER_ENABLED 0           /* 是否绘制 popup 边框 (0=不绘制) */
+#define CONFIG_POPUP_BORDER_WIDTH   1            /* popup 边框宽度 (px) */
+#define CONFIG_POPUP_BORDER_COLOR   0xFF676E95u    /* popup 边框颜色, 0xAARRGGBB */
 
-/* 不绘制光晕. 把大小设为 0 即可完全关闭. */
-#define CONFIG_BORDER_GLOW_SIZE 18        /* 光晕超出边框的宽度 (px) */
-#define CONFIG_BORDER_GLOW_ALPHA 0.18f    /* 光晕在边框边缘处的峰值不透明度 */
-#define CONFIG_BORDER_BAND_BLEND 15 /* 顶部三段色拼接处的渐变宽度 (px) */
-
-#define CONFIG_BORDER_COLOR_MIN 0xFFF5A3A3u    /* middle third: minimize/restore (#f5a3a3) */
-#define CONFIG_BORDER_COLOR_MAX 0xFF87BEAAu /* left third: maximize (#87beaa) */
-#define CONFIG_BORDER_COLOR_CLOSE 0xFFD55F6Fu  /* right third: close (#d55f6f) */
+/* scenefx 窗口阴影. 把 CONFIG_SHADOW_ENABLED 设为 0 即可完全关闭.
+ * 只有聚焦窗口绘制阴影, 非聚焦窗口不绘制. */
+#define CONFIG_SHADOW_ENABLED    1           /* 是否绘制窗口阴影 */
+#define CONFIG_SHADOW_BLUR_SIGMA 25.0f    /* 阴影高斯模糊 sigma (px) */
+#define CONFIG_SHADOW_COLOR      0x66000000u   /* 阴影颜色, 0xAARRGGBB */
+#define CONFIG_SHADOW_OFFSET_X   0          /* 阴影相对窗口的水平偏移 (px) */
+#define CONFIG_SHADOW_OFFSET_Y   0          /* 阴影相对窗口的垂直偏移 (px) */
 
 
 #define CONFIG_DOUBLE_CLICK_NS (400 * 1000000L) /* double-click window (ns) */
 #define CONFIG_LONG_PRESS_NS (350 * 1000000L) /* holding the strip this long grabs the window (ns) */
 #define CONFIG_DRAG_THRESHOLD 4.0         /* 判断是否移动窗口 */
 
-#define CONFIG_WHEEL_DEBOUNCE_ENABLED false /* 控制是否启用骚鼠标 */
+#define CONFIG_WHEEL_DEBOUNCE_ENABLED true /* 控制是否启用骚鼠标 */
 #define CONFIG_WHEEL_BURST_NS (800 * 1000000L)   /* one continuous scroll: max length = one action (0.8 s) */
 #define CONFIG_WHEEL_TICK_GAP_NS (300 * 1000000L) /* two ticks this far apart = next action (0.3 s) */
 
@@ -73,13 +79,10 @@
 #define CONFIG_KEY_CLOSE XKB_KEY_c           // close app
 #define CONFIG_KEY_CLOSE_OTHER XKB_KEY_x      // close other apps
 
-
-
 #define MODKEY1 WLR_MODIFIER_LOGO                        // win
 #define MODKEY2 WLR_MODIFIER_SHIFT | WLR_MODIFIER_ALT    // shift+alt
 #define MODKEY3 WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL   // shift+ctrl
 #define MODKEY WLR_MODIFIER_ALT   | WLR_MODIFIER_CTRL   // alt+ctrl
-
 
 /* 应用启动快捷键: mods + key 启动 app，args 可为 NULL 或空串 */
 struct config_app_shortcut {

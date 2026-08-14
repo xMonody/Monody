@@ -10,8 +10,7 @@
  * Modules:
  *   ipc.c      - status-bar socket (JSON events)
  *   scene.c    - scene-graph tagging / hit-testing
- *   toplevel.c - xdg-shell windows, window state, decorations
- *   border.c   - rounded server-side border for undecorated windows
+ *   toplevel.c - xdg-shell windows, window state, scenefx decorations
  *   layer.c    - wlr-layer-shell surfaces + work area
  *   output.c   - monitors + wlr-output-management
  *   input.c    - seat, keyboard, shortcuts
@@ -43,8 +42,10 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
-#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_shm.h>
+
+#include <scenefx/render/fx_renderer/fx_renderer.h>
+#include <scenefx/types/wlr_scene.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
@@ -77,6 +78,17 @@ void spawn_command(const char *cmd) {
 
 	if (setsid() == -1) {
 		_exit(127);
+	}
+
+	/* never leave the child in the compositor's working directory: the
+	 * compositor's CWD can be deleted while it runs (e.g. the build
+	 * directory is removed and rebuilt), and some apps - foot in
+	 * particular, which starts a shell - hang before mapping their
+	 * window when the CWD no longer exists.  A stable directory also
+	 * keeps apps from inheriting a weird location. */
+	const char *home = getenv("HOME");
+	if (home == NULL || home[0] == '\0' || chdir(home) == -1) {
+		chdir("/");
 	}
 
 	int devnull = open("/dev/null", O_RDWR);
@@ -132,6 +144,11 @@ static void init_reaper(void) {
 			"init_reaper: failed to install SIGCHLD handler: %s",
 			strerror(errno));
 	}
+
+	/* never die from a write to a disconnected IPC client (a status bar
+	 * that exited): the IPC layer cleans the client up and reports the
+	 * failure instead of letting SIGPIPE kill the whole compositor */
+	signal(SIGPIPE, SIG_IGN);
 }
 
 static void run_startup_file(void) {
@@ -230,7 +247,7 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "failed to create backend");
 		return EXIT_FAILURE;
 	}
-	server.renderer = wlr_renderer_autocreate(server.backend);
+	server.renderer = fx_renderer_create(server.backend);
 	if (server.renderer == NULL) {
 		wlr_log(WLR_ERROR, "failed to create renderer");
 		return EXIT_FAILURE;
@@ -263,6 +280,10 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "failed to create xcursor manager");
 		return EXIT_FAILURE;
 	}
+	/* show the default arrow right away so the pointer is visible when the
+	 * first output appears - otherwise no cursor image exists until the
+	 * first pointer motion and the desktop starts without a cursor */
+	wlr_cursor_set_xcursor(server.cursor, server.xcursor_manager, "left_ptr");
 
 	for (int i = 0; i < LAYER_COUNT; i++) {
 		server.layers[i] = wlr_scene_tree_create(&server.scene->tree);
@@ -312,8 +333,7 @@ int main(int argc, char *argv[]) {
 
 	/* wp_fractional_scale_v1: surfaces are told the output's exact
 	 * fractional scale; wlroots scene surfaces (layer-shell, subsurfaces,
-	 * cursor) handle it automatically, toplevels are notified by
-	 * toplevel.c through their masked scene buffer */
+	 * cursor, toplevels) handle it automatically */
 	server.fractional_scale_manager =
 		wlr_fractional_scale_manager_v1_create(server.display, 1);
 	if (server.fractional_scale_manager == NULL) {

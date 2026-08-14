@@ -28,7 +28,7 @@
 #include "server.h"
 
 #include <wlr/types/wlr_output_layout.h>
-#include <wlr/types/wlr_scene.h>
+#include <scenefx/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
 
 /* center a toplevel on the output under the cursor (falling back to the
@@ -50,8 +50,9 @@ bool place_toplevel(struct server *server, struct toplevel *tl) {
 	if (sw <= 0 || sh <= 0) {
 		return false;
 	}
-	/* the masked content buffer sits at node - geometry, so the surface's
-	 * top-left corner is (node.x - gx, node.y - gy) and the window's real
+	/* the xdg surface tree is anchored at the geometry top-left and the
+	 * surface sits at -geometry inside it, so the surface's top-left
+	 * corner is (node.x - gx, node.y - gy) and the window's real
 	 * rendering extent is that corner plus the surface size.  Centering
 	 * on this extent (instead of the xdg geometry) is what keeps windows
 	 * whose surface is bigger than their geometry (QQ) on center. */

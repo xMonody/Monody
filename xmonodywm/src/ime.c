@@ -31,7 +31,7 @@
 
 #include <wlr/types/wlr_input_method_v2.h>
 #include <wlr/types/wlr_keyboard.h>
-#include <wlr/types/wlr_scene.h>
+#include <scenefx/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_text_input_v3.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
@@ -272,18 +272,21 @@ void ime_update_popup(struct server *server) {
 		if (have_caret && server->focused != NULL &&
 				server->focused->xdg_toplevel != NULL &&
 				server->focused->xdg_toplevel->base != NULL &&
-				server->focused->masked != NULL &&
+				server->focused->scene_tree != NULL &&
 				server->focused->xdg_toplevel->base->surface ==
 					server->ime_focused_surface) {
 			/* text-input-v3 cursor_rectangle is surface-local logical.
-			 * Get the client surface's top-left directly from the scene
-			 * node that actually displays it (tl->masked), which already
-			 * includes the xdg geometry offset, parent scene-tree offsets
-			 * and any server-side decoration layout.  Do not apply
-			 * output/fractional scale: the rectangle is not in buffer
-			 * pixels. */
-			wlr_scene_node_coords(&server->focused->masked->node,
+			 * The xdg scene tree is anchored at the window geometry's
+			 * top-left and the surface sits at -geometry inside it, so
+			 * subtract the geometry offset to get the surface's top-left
+			 * in layout coordinates.  Do not apply output/fractional
+			 * scale: the rectangle is not in buffer pixels. */
+			struct wlr_xdg_surface *focused_base =
+				server->focused->xdg_toplevel->base;
+			wlr_scene_node_coords(&server->focused->scene_tree->node,
 				&surface_global_x, &surface_global_y);
+			surface_global_x -= focused_base->geometry.x;
+			surface_global_y -= focused_base->geometry.y;
 			caret_global_x = surface_global_x + caret.x;
 			caret_global_y = surface_global_y + caret.y;
 			caret_mapped = true;
@@ -584,8 +587,14 @@ static void ime_popup_commit(struct wl_listener *listener, void *data) {
 
 static void ime_popup_destroy(struct wl_listener *listener, void *data) {
 	struct ime *ime = wl_container_of(listener, ime, popup_destroy);
-	wl_list_remove(&ime->popup_commit.link);
-	wl_list_remove(&ime->popup_destroy.link);
+	/* guarded: wayland's wl_list_remove nulls the link, and ime_destroy may
+	 * already have detached popup_commit when the IM died first */
+	if (ime->popup_commit.link.prev != NULL) {
+		wl_list_remove(&ime->popup_commit.link);
+	}
+	if (ime->popup_destroy.link.prev != NULL) {
+		wl_list_remove(&ime->popup_destroy.link);
+	}
 	ime->popup_scene_surface = NULL;
 	ime->popup_surface = NULL;
 }

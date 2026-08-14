@@ -22,7 +22,7 @@
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_primary_selection.h>
-#include <wlr/types/wlr_scene.h>
+#include <scenefx/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_virtual_pointer_v1.h>
@@ -38,6 +38,13 @@ static void client_cursor_surface_destroy(struct wl_listener *listener,
 		wl_container_of(listener, server, client_cursor_destroy);
 	wl_list_remove(&server->client_cursor_destroy.link);
 	server->client_cursor_surface = NULL;
+	/* the client's cursor surface is gone: if the compositor doesn't own
+	 * the cursor (title strip / resize edge), show the default arrow */
+	if (server->cursor_override == NULL) {
+		wlr_log(WLR_DEBUG, "cursor: default (cursor surface gone)");
+		wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,
+			"left_ptr");
+	}
 }
 
 static void client_cursor_shape_client_destroy(struct wl_listener *listener,
@@ -47,6 +54,21 @@ static void client_cursor_shape_client_destroy(struct wl_listener *listener,
 	wl_list_remove(&server->client_cursor_shape_client_destroy.link);
 	server->client_cursor_shape = 0;
 	server->client_cursor_shape_client = NULL;
+	/* the client that owned the cursor shape is gone: revert to the
+	 * default arrow unless the compositor currently owns the cursor */
+	if (server->cursor_override == NULL) {
+		wlr_log(WLR_DEBUG, "cursor: default (shape client gone)");
+		wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,
+			"left_ptr");
+	}
+}
+
+/* remove a listener only while it is still attached: wl_list_remove on an
+ * already-detached link would corrupt the list it once lived in */
+static void listener_remove_if_attached(struct wl_listener *listener) {
+	if (listener->link.prev != NULL) {
+		wl_list_remove(&listener->link);
+	}
 }
 
 void seat_request_set_cursor(struct wl_listener *listener, void *data) {
@@ -65,14 +87,15 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 		 * (clients mixing both protocols: the last request wins) */
 		server->client_cursor_shape = 0;
 		if (server->client_cursor_shape_client != NULL) {
-			wl_list_remove(&server->client_cursor_shape_client_destroy.link);
+			listener_remove_if_attached(
+				&server->client_cursor_shape_client_destroy);
 			server->client_cursor_shape_client = NULL;
 		}
 		/* remember the client's cursor so it can be restored when the
 		 * compositor cursor override (title strip / resize edge) ends */
 		if (server->client_cursor_surface != event->surface) {
 			if (server->client_cursor_surface != NULL) {
-				wl_list_remove(&server->client_cursor_destroy.link);
+				listener_remove_if_attached(&server->client_cursor_destroy);
 			}
 			server->client_cursor_surface = event->surface;
 			if (event->surface != NULL) {
@@ -172,7 +195,8 @@ void seat_request_set_shape(struct wl_listener *listener, void *data) {
 	}
 	if (server->client_cursor_shape_client != event->seat_client) {
 		if (server->client_cursor_shape_client != NULL) {
-			wl_list_remove(&server->client_cursor_shape_client_destroy.link);
+			listener_remove_if_attached(
+				&server->client_cursor_shape_client_destroy);
 		}
 		server->client_cursor_shape_client_destroy.notify =
 			client_cursor_shape_client_destroy;
@@ -340,15 +364,25 @@ static bool keyboard_shortcut(struct server *server,
 	if (keyboard->xkb_state == NULL) {
 		return false; /* no keymap yet: nothing to match */
 	}
+	/* match against the key's base keysym (level 0 of the active layout
+	 * group) instead of xkb_state_key_get_syms: modifiers transform the
+	 * reported keysym (Ctrl+letter becomes a control character, Shift+
+	 * letter becomes uppercase, some layouts remap Alt+letter), which
+	 * silently broke letter bindings like Alt+Ctrl+F.  All config keysyms
+	 * are unmodified letters / digits / symbols, so the base keysym is
+	 * exactly what they refer to. */
+	xkb_layout_index_t layout =
+		xkb_state_key_get_layout(keyboard->xkb_state, keycode);
 	const xkb_keysym_t *syms;
-	int nsyms = xkb_state_key_get_syms(keyboard->xkb_state, keycode, &syms);
+	int nsyms = xkb_keymap_key_get_syms_by_level(keyboard->keymap,
+		keycode, layout, 0, &syms);
 	uint32_t mods = keyboard->modifiers.depressed | keyboard->modifiers.latched;
 	bool main_mod = (mods & CONFIG_MOD_MAIN) == CONFIG_MOD_MAIN;
 	bool quit_mod = (mods & CONFIG_MOD_QUIT) == CONFIG_MOD_QUIT;
 
 	for (int i = 0; i < nsyms; i++) {
-		/* with Shift held xkb reports the shifted keysym (e.g. 'Q'), so
-		 * compare case-insensitively for the letter bindings */
+		/* base syms are already unshifted, but lower anyway for layouts
+		 * where the base level carries an uppercase letter */
 		xkb_keysym_t sym = xkb_keysym_to_lower(syms[i]);
 		if (sym == CONFIG_KEY_QUIT && (main_mod || quit_mod)) {
 			wl_display_terminate(server->display);

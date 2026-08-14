@@ -5,33 +5,28 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 ## Design
 
 * Floating windows only — no tiling, no tabs.
-* The compositor draws a **rounded border** (`#7C73B0`, 2 px stroke, 12 px
-  corner radius) around undecorated windows; its inner edge overlaps the
-  window content by 1 px (`CONFIG_BORDER_OVERLAP`) so the anti-aliased edge
-  blends onto the content and no background seam shows between the ring and
-  the app; client-side decorated windows keep their native decorations.  The border is rendered on the GPU by a GLES2
-  fragment shader (a rounded-rect SDF) drawn into a wlroots render-target
-  buffer, so resizing costs no CPU rasterization.  The **top edge of the
-  border is split into three equal colored segments** (same thin stroke as
-  the other three sides): left `#87beaa` (minimize), middle `#f5a3a3`
-  (maximize/restore), right `#d55f6f` (close).  The window content itself
-  is re-rendered through a second GLES2 pass with a rounded-corner alpha mask
-  (mask.c) — wlr_scene cannot clip a surface to a rounded rectangle — so the
-  content's square corners are cut away instead of poking out of the ring,
-  and the ring's inner arc and the content meet on the same arc with no
-  seam.  The **focused window's border gets a Windows-11-style soft glow**
-  (`CONFIG_BORDER_GLOW_SIZE` px of the border color fading out past the
-  ring); inactive windows are never glowed.
+* The compositor draws a **rounded border** (`#676E95`, `CONFIG_BORDER_WIDTH`
+  px stroke, `CONFIG_BORDER_RADIUS` px corner radius) around undecorated
+  windows and a **soft shadow** behind floating windows.  Both are provided
+  by **scenefx**: the content surface's corners are rounded with
+  `wlr_scene_buffer_set_corner_radius`, the border is a
+  `wlr_scene_rect` with a rounded hole clipped out of it, and the shadow is
+  a `wlr_scene_shadow` node lowered below the border.  All parameters
+  (`CONFIG_BORDER_*`, `CONFIG_SHADOW_*`) live in `config.h`; client-side
+  decorated windows keep their native decorations.  **Fullscreen windows
+  keep the same rounded corners as maximized ones** (only the border color
+  switches to `CONFIG_FULLSCREEN_BORDER_COLOR`), so the corners never
+  disappear when a window goes fullscreen.
 * **Client-side decorated** windows (mode `CLIENT_SIDE` via xdg-decoration, or
   apps with their own header bars) keep their native controls: the client's own
   title bar moves the window through `xdg_toplevel.move`, its buttons work, its
   edges resize natively, and `request_maximize` / `request_minimize` are honored.
 * **Server-side / undecorated** windows get a *visible* frame owned by the
-  compositor: a rounded border whose top edge is split into three equal
-  colored segments (`#87beaa` minimize / `#f5a3a3` maximize-restore /
-  `#d55f6f` close) plus grab zones around the left/right/bottom edges and
-  corners; the cursor style updates as soon as the pointer enters them and
-  reverts as soon as it crosses back into the window):
+  compositor: a single-color rounded border ring plus grab zones around the
+  left/right/bottom edges and corners, and a title strip across the top
+  whose left/middle/right thirds map to minimize / maximize-restore / close;
+  the cursor style updates as soon as the pointer enters them and reverts
+  as soon as it crosses back into the window):
 
   | pointer position | cursor | gesture | action |
   |---|---|---|---|
@@ -51,14 +46,21 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
   | bottom corners     | `nwse/nesw`   | hold + drag              | resize diagonally |
 
   Clicking anywhere on a window focuses and raises it.
-* **Right-hold + wheel is debounced.**  A trackpad flick or a
+* **Popups win the pointer over the compositor frame.**  While a popup
+  (menu / dropdown / tooltip) is open, everything under it belongs to the
+  popup: the compositor's resize edges and title strip are disabled there,
+  so hovering a menu that overlaps the window's border never starts a
+  resize and clicks land on the menu instead of the frame.
+* **Right-hold + wheel and the two-button chords are gated on
+  `CONFIG_WHEEL_DEBOUNCE_ENABLED`** (off by default; set it to `true` in
+  `config.h` to enable them).  When enabled, a trackpad flick or a
   high-resolution wheel delivers many ticks in one burst, so two
   thresholds coalesce them: one continuous scroll (however fast) counts
   as a single action for at most `CONFIG_WHEEL_BURST_NS` (800 ms), and
   two ticks at least `CONFIG_WHEEL_TICK_GAP_NS` (300 ms) apart are the
   next action — so a flick toggles maximize/restore once, while a slow,
   deliberate scroll fires per notch.  The burst resets on right-button
-  release (toggle off via `CONFIG_WHEEL_DEBOUNCE_ENABLED`).
+  release.
 * **Dragging the top strip of a maximized window restores it** to its previous
   position and size, then the drag continues with the cursor gripping the
   restored title bar — same as Windows.
@@ -100,8 +102,8 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 | `zwlr_virtual_pointer_manager_v1` | extra, used for input testing |
 | `wp_cursor_shape_manager_v1` | clients pick a cursor shape; the compositor renders it from its own xcursor theme at the output's (fractional) scale, so the size always matches — no client-side guessing |
 | `xdg_activation_v1` | client-driven window activation/focus; activation requests focus (and restore) the matching toplevel |
-| `wp_fractional_scale_v1` | surfaces are told the output's exact fractional scale; toplevels get the notification through their masked scene buffer |
-| `wp_linux_drm_syncobj_manager_v1` | explicit buffer synchronization via DRM syncobj timelines; the custom mask GL pass waits on acquire points, release points are tied to the masked buffer |
+| `wp_fractional_scale_v1` | surfaces are told the output's exact fractional scale |
+| `wp_linux_drm_syncobj_manager_v1` | explicit buffer synchronization via DRM syncobj timelines |
 | `zwp_input_method_v2` | input method (fcitx5/ibus) — activation, keyboard grab, preedit/commit |
 | `zwp_text_input_v3` | per-window text input — enter/leave, surrounding text, commit string |
 
@@ -116,8 +118,8 @@ src/
   main.c      entry point: display/backend/scene setup, protocol globals, run loop
   ipc.c/h     status-bar socket (JSON over a Unix domain socket)
   scene.c     scene-graph tagging / hit-testing helpers
-  toplevel.c  xdg-shell windows, window state (max/min/fullscreen), decorations
-  border.c    rounded server-side border for undecorated windows
+  toplevel.c  xdg-shell windows, window state (max/min/fullscreen), scenefx
+              decorations (rounded corners, border ring, shadow)
   layer.c     wlr-layer-shell surfaces + work area
   output.c    monitors, output layout, wlr-output-management
   input.c     seat, keyboard, compositor shortcuts
@@ -194,9 +196,10 @@ layers (bottom -> top):
 Layer-shell exclusive zones shrink the work area that maximized windows use.
 A maximized window is never flush against the work area: the side facing a
 status bar (exclusive zone at the top or bottom) is flush with it
-(`CONFIG_MAXIMIZED_GAP_BAR` = 0 by default), and the other three sides are
-flush too (`CONFIG_MAXIMIZED_GAP` = 0): a maximized window fills the whole
-work area, its border ring touching the bar / screen edges.
+(`CONFIG_MAXIMIZED_GAP_BAR` = 0.5 by default), and the other three sides
+are flush too (`CONFIG_MAXIMIZED_GAP` = 0.5): a maximized window fills the
+whole work area, its border ring sitting `CONFIG_MAXIMIZED_GAP` px away
+from the bar / screen edges.
 
 ## Build
 
@@ -246,18 +249,24 @@ Everything tunable lives in **`src/config.h`** (edit and rebuild):
 
 | option | meaning | default |
 |---|---|---|
-| `CONFIG_BORDER_RADIUS` | rounded-corner radius of the border (px) | `12` |
-| `CONFIG_BORDER_WIDTH` / `CONFIG_BORDER_OVERLAP` / `CONFIG_BORDER_COLOR` | border stroke / overlap onto content / color (`0xAARRGGBB`) | `2` / `1` / `#7C73B0` |
-| `CONFIG_BORDER_GLOW_SIZE` / `CONFIG_BORDER_GLOW_ALPHA` | Windows-11-style soft halo around the **active** window's border: width beyond the ring (px) / peak opacity at the ring (0..1; 0 = off), fading out progressively; above the top edge the glow follows the band's segment colors | `18` / `0.18` |
-| `CONFIG_BORDER_COLOR_MIN` / `_MAX` / `_CLOSE` | top-border segment colors: left (minimize) / middle (maximize-restore) / right (close) | `#87beaa` / `#f5a3a3` / `#d55f6f` |
-| `CONFIG_BORDER_BAND_BLEND` | gradient width at the seams between the three top-band segment colors (px); `0` = hard edges | `16` |
-| `CONFIG_MAXIMIZED_BORDER_ENABLED` | `1`: maximized windows keep the border, its top band a single unified color (the ring color); `0`: no border when maximized | `1` |
-| `CONFIG_FULLSCREEN_GAP` | fullscreen window inset from the screen edges (px), like `CONFIG_MAXIMIZED_GAP_BAR`, so the border ring around a fullscreen window is clearly visible (`0` = ring flush with the screen edge) | `1` |
-| `CONFIG_FULLSCREEN_BORDER_COLOR` | border color of fullscreen windows (ring + unified top band, `0xAARRGGBB`); maximized windows keep the normal focus-colored ring + three-segment top band | `#F5A3A3` |
-| `CONFIG_EDGE_THICKNESS` | grab zone on window edges/corners for move+resize (px) | `20` |
-| `CONFIG_TITLEBAR_HEIGHT` | colored title strip at the window top (px) | `10` |
+| `CONFIG_BORDER_RADIUS` | rounded-corner radius of the border ring (px) | `8` |
+| `CONFIG_BORDER_WIDTH` | border stroke thickness (px) | `1.5` |
+| `CONFIG_BORDER_COLOR` / `CONFIG_BORDER_COLOR_UNFOCUSED` | border ring color, focused / unfocused (`0xAARRGGBB`) | `#676E95` / `#676E95` |
+| `CONFIG_BORDER_COLOR_MIN` / `_MAX` / `_CLOSE` | top-border segment colors: left (minimize) / middle (maximize-restore) / right (close) | `#f5a3a3` / `#87beaa` / `#d55f6f` |
+| `CONFIG_BORDER_BAND_BLEND` | gradient width at the seams between the three top-band segment colors (px); the whole top band is rendered as a smooth ramp | `15` |
+| `CONFIG_SHADOW_ENABLED` | draw a soft shadow behind floating windows (`0` = off) | `1` |
+| `CONFIG_SHADOW_BLUR_SIGMA` | scenefx shadow gaussian blur sigma (px) | `20` |
+| `CONFIG_SHADOW_COLOR` | shadow color (`0xAARRGGBB`) | `0x66000000` |
+| `CONFIG_SHADOW_OFFSET_X` / `CONFIG_SHADOW_OFFSET_Y` | shadow offset relative to the window (px) | `0` / `0` |
+| `CONFIG_POPUP_BORDER_ENABLED` | draw a border around popups (menu/tooltip/combo) (`0` = off) | `0` |
+| `CONFIG_POPUP_BORDER_WIDTH` / `CONFIG_POPUP_BORDER_COLOR` | popup border stroke / color (`0xAARRGGBB`) | `1` / `#676E95` |
+| `CONFIG_MAXIMIZED_BORDER_ENABLED` | non-zero: maximized windows keep the border; `0`: no border when maximized | `1.5` |
+| `CONFIG_FULLSCREEN_GAP` | fullscreen window inset from the screen edges (px) so the border ring around a fullscreen window stays visible (`0` = ring flush with the screen edge) | `1.5` |
+| `CONFIG_FULLSCREEN_BORDER_COLOR` | border color of fullscreen windows (`0xAARRGGBB`) | `#87BEAA` |
+| `CONFIG_EDGE_THICKNESS` | grab zone on window edges/corners for move+resize (px) | `8` |
+| `CONFIG_TITLEBAR_HEIGHT` | colored title strip at the window top (px) | `8` |
 | `CONFIG_LONG_PRESS_NS` | holding the strip this long grabs the window for moving (ns) | `350 ms` |
-| `CONFIG_WHEEL_DEBOUNCE_ENABLED` / `CONFIG_WHEEL_BURST_NS` / `CONFIG_WHEEL_TICK_GAP_NS` | right-hold + wheel: coalesce rapid ticks (bool) / one continuous scroll = one action for at most this long / two ticks this far apart = next action | `true` / `800 ms` / `300 ms` |
+| `CONFIG_WHEEL_DEBOUNCE_ENABLED` / `CONFIG_WHEEL_BURST_NS` / `CONFIG_WHEEL_TICK_GAP_NS` | right-hold + wheel: coalesce rapid ticks (bool) / one continuous scroll = one action for at most this long / two ticks this far apart = next action | `false` / `800 ms` / `300 ms` |
 | `CONFIG_MOD_MAIN` / `CONFIG_KEY_*` | shortcut modifier combo / keysyms (see below) | `Shift+Alt` |
 
 ## Shortcuts
@@ -328,12 +337,20 @@ Requests a client can send (one JSON object per line):
 
 A taskbar can use this to switch focus when an icon is clicked.
 
+**The compositor never dies on a dead bar.**  A status bar that exits or
+crashes mid-session is harmless: writes to its closed socket are reported
+as a normal error (SIGPIPE is ignored) and the disconnected client is
+cleaned up without the event path ever touching it again — closing a
+window while the bar is gone is safe.  Cursor state owned by a closing
+client (cursor shape / cursor surface) is fully detached from the seat and
+surface destroy signals, so the client teardown always stays clean.
+
 
 ## Tests
 
-The repo contains two small Wayland clients used to validate the compositor;
-CMake builds them from the client headers generated out of `Protocol/` (no
-dependency on a wlroots build tree):
+The repo contains a set of small Wayland clients used to validate the
+compositor; CMake builds them from the client headers generated out of
+`Protocol/` (no dependency on a wlroots build tree):
 
 * `test-client.c` — xdg-shell configure/maximize/minimize/move and
   xdg-decoration mode negotiation.
@@ -367,12 +384,9 @@ dependency on a wlroots build tree):
   whole drag — the only cursor decisions allowed are the hover
   transitions between drags.  Run with `./test-resize-cursor.sh`
   (auto-asserts the exact cursor sequence from the `WLR_DEBUG` log).
-* `test-mask-guard.c` + `test-mask-guard.sh` — rounded-mask re-render
-  guard: a client attaches a buffer with damage, then commits without
-  attach/damage (must be skipped), re-attaches the same buffer with
-  damage (must render), then a new buffer (must render).  Run with
-  `./test-mask-guard.sh` (asserts exactly 3 mask renders from the
-  `WLR_DEBUG` log).
+* `test-mask-guard.c` — (obsolete) exercised the removed custom
+  rounded-corner mask re-render path; kept only as a client commit
+  smoke test.
 * `test-bar-clamp.c` — layer-shell bars (top/bottom, NULL-output and
   per-output) + a virtual pointer: verifies a dragged window can never
   slide underneath a status bar, and that its top never goes closer than

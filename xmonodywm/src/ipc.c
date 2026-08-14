@@ -54,22 +54,25 @@ static void ipc_client_destroy(struct ipc_client *client) {
 	free(client);
 }
 
-/* try to write all queued output; on success the buffer is emptied */
-static void ipc_client_flush(struct ipc_client *client) {
+/* try to write all queued output; on success the buffer is emptied.
+ * Returns false when the client was destroyed by a failing write (the
+ * caller must not touch the client afterwards). */
+static bool ipc_client_flush(struct ipc_client *client) {
 	while (client->out_off < client->out_len) {
 		ssize_t n = write(client->fd, client->out + client->out_off,
 			client->out_len - client->out_off);
 		if (n < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				return; /* wait for the writable event */
+				return true; /* wait for the writable event */
 			}
 			ipc_client_destroy(client);
-			return;
+			return false; /* the client is gone */
 		}
 		client->out_off += n;
 	}
 	client->out_len = 0;
 	client->out_off = 0;
+	return true;
 }
 
 static void ipc_client_queue(struct ipc_client *client, const char *json) {
@@ -89,7 +92,11 @@ static void ipc_client_queue(struct ipc_client *client, const char *json) {
 	memcpy(client->out + client->out_len, json, len);
 	client->out_len += len;
 	client->out[client->out_len++] = '\n';
-	ipc_client_flush(client);
+	/* the flush may destroy the client (failing write to a disconnected
+	 * bar): never touch it again in that case */
+	if (!ipc_client_flush(client)) {
+		return;
+	}
 	/* keep the writable event enabled while there is pending output */
 	uint32_t mask = WL_EVENT_READABLE;
 	if (client->out_off < client->out_len) {
@@ -167,7 +174,9 @@ static int ipc_client_handle_data(int fd, uint32_t mask, void *data) {
 	struct ipc_client *client = data;
 	struct server *server = client->server;
 	if ((mask & WL_EVENT_WRITABLE) != 0) {
-		ipc_client_flush(client);
+		if (!ipc_client_flush(client)) {
+			return 0; /* the client was destroyed by the failing write */
+		}
 		uint32_t new_mask = WL_EVENT_READABLE;
 		if (client->out_off < client->out_len) {
 			new_mask |= WL_EVENT_WRITABLE;
