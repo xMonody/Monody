@@ -195,6 +195,50 @@ static GLuint border_shader_program(void) {
 	return program;
 }
 
+struct border_gl {
+	GLuint program;
+	GLint u_size, u_radius, u_width, u_overlap, u_glow, u_glow_alpha;
+	GLint u_strip, u_band_blend;
+	GLint u_color, u_color_min, u_color_max, u_color_close;
+	GLint a_pos;
+	GLuint vbo;
+};
+
+/* the border program, its uniform/attrib locations and the shared
+ * fullscreen-quad VBO, initialized once (all-zero on failure).  Cached the
+ * same way as mask.c: glGetUniformLocation is a driver-side string lookup
+ * and glGenBuffers/glDeleteBuffers churn a driver object on every draw
+ * (the border re-renders on every resize step and focus change). */
+static struct border_gl border_gl(void) {
+	static struct border_gl gl;
+	static bool tried;
+	if (tried) {
+		return gl;
+	}
+	tried = true;
+	gl.program = border_shader_program();
+	if (gl.program != 0) {
+		gl.u_size = glGetUniformLocation(gl.program, "u_size");
+		gl.u_radius = glGetUniformLocation(gl.program, "u_radius");
+		gl.u_width = glGetUniformLocation(gl.program, "u_width");
+		gl.u_overlap = glGetUniformLocation(gl.program, "u_overlap");
+		gl.u_glow = glGetUniformLocation(gl.program, "u_glow");
+		gl.u_glow_alpha = glGetUniformLocation(gl.program, "u_glow_alpha");
+		gl.u_strip = glGetUniformLocation(gl.program, "u_strip");
+		gl.u_band_blend = glGetUniformLocation(gl.program, "u_band_blend");
+		gl.u_color = glGetUniformLocation(gl.program, "u_color");
+		gl.u_color_min = glGetUniformLocation(gl.program, "u_color_min");
+		gl.u_color_max = glGetUniformLocation(gl.program, "u_color_max");
+		gl.u_color_close = glGetUniformLocation(gl.program, "u_color_close");
+		gl.a_pos = glGetAttribLocation(gl.program, "a_pos");
+		static const float verts[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+		glGenBuffers(1, &gl.vbo);
+		glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+	}
+	return gl;
+}
+
 /* the format used for border render targets */
 static const struct wlr_drm_format *border_format(void) {
 	static struct wlr_drm_format_set set;
@@ -263,9 +307,9 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 	glGetIntegerv(GL_SCISSOR_BOX, prev_scissor_box);
 
 	bool ok = false;
-	GLuint program = border_shader_program();
+	struct border_gl gl = border_gl();
 	GLuint fbo = wlr_gles2_renderer_get_buffer_fbo(server->renderer, buffer);
-	if (program != 0 && fbo != 0) {
+	if (gl.program != 0 && gl.vbo != 0 && fbo != 0) {
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 		glViewport(0, 0, width, height);
 		glDisable(GL_SCISSOR_TEST);
@@ -273,22 +317,21 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 
-		glUseProgram(program);
-		glUniform2f(glGetUniformLocation(program, "u_size"),
-			(float)width, (float)height);
-		glUniform1f(glGetUniformLocation(program, "u_radius"), CONFIG_BORDER_RADIUS);
-		glUniform1f(glGetUniformLocation(program, "u_width"), ring_width);
-		glUniform1f(glGetUniformLocation(program, "u_overlap"), CONFIG_BORDER_OVERLAP);
-		glUniform1f(glGetUniformLocation(program, "u_glow"),
+		glUseProgram(gl.program);
+		glUniform2f(gl.u_size, (float)width, (float)height);
+		glUniform1f(gl.u_radius, CONFIG_BORDER_RADIUS);
+		glUniform1f(gl.u_width, ring_width);
+		glUniform1f(gl.u_overlap, CONFIG_BORDER_OVERLAP);
+		glUniform1f(gl.u_glow,
 			focused ? (float)CONFIG_BORDER_GLOW_SIZE : 0.0f);
-		glUniform1f(glGetUniformLocation(program, "u_glow_alpha"),
+		glUniform1f(gl.u_glow_alpha,
 			focused ? CONFIG_BORDER_GLOW_ALPHA : 0.0f);
-		glUniform1f(glGetUniformLocation(program, "u_strip"),
+		glUniform1f(gl.u_strip,
 			show_strip ? 1.0f : 0.0f);
-		glUniform1f(glGetUniformLocation(program, "u_band_blend"),
+		glUniform1f(gl.u_band_blend,
 			CONFIG_BORDER_BAND_BLEND);
 		/* colors are 0xAARRGGBB */
-		glUniform4f(glGetUniformLocation(program, "u_color"),
+		glUniform4f(gl.u_color,
 			(float)((color >> 16) & 0xFF) / 255.0f,
 			(float)((color >> 8) & 0xFF) / 255.0f,
 			(float)((color >> 0) & 0xFF) / 255.0f,
@@ -305,33 +348,27 @@ static bool border_render(struct server *server, struct wlr_buffer *buffer,
 			(unified_strip ? color : CONFIG_BORDER_COLOR_MAX);
 		uint32_t seg_close = dialog ? CONFIG_BORDER_COLOR_CLOSE :
 			(unified_strip ? color : CONFIG_BORDER_COLOR_CLOSE);
-		glUniform4f(glGetUniformLocation(program, "u_color_min"),
+		glUniform4f(gl.u_color_min,
 			(float)((seg_min >> 16) & 0xFF) / 255.0f,
 			(float)((seg_min >> 8) & 0xFF) / 255.0f,
 			(float)((seg_min >> 0) & 0xFF) / 255.0f,
 			(float)((seg_min >> 24) & 0xFF) / 255.0f);
-		glUniform4f(glGetUniformLocation(program, "u_color_max"),
+		glUniform4f(gl.u_color_max,
 			(float)((seg_max >> 16) & 0xFF) / 255.0f,
 			(float)((seg_max >> 8) & 0xFF) / 255.0f,
 			(float)((seg_max >> 0) & 0xFF) / 255.0f,
 			(float)((seg_max >> 24) & 0xFF) / 255.0f);
-		glUniform4f(glGetUniformLocation(program, "u_color_close"),
+		glUniform4f(gl.u_color_close,
 			(float)((seg_close >> 16) & 0xFF) / 255.0f,
 			(float)((seg_close >> 8) & 0xFF) / 255.0f,
 			(float)((seg_close >> 0) & 0xFF) / 255.0f,
 			(float)((seg_close >> 24) & 0xFF) / 255.0f);
 
-		GLint loc = glGetAttribLocation(program, "a_pos");
-		static const float verts[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
-		GLuint vbo = 0;
-		glGenBuffers(1, &vbo);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STREAM_DRAW);
-		glEnableVertexAttribArray((GLuint)loc);
-		glVertexAttribPointer((GLuint)loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+		glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
+		glEnableVertexAttribArray((GLuint)gl.a_pos);
+		glVertexAttribPointer((GLuint)gl.a_pos, 2, GL_FLOAT, GL_FALSE, 0, NULL);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-		glDisableVertexAttribArray((GLuint)loc);
-		glDeleteBuffers(1, &vbo);
+		glDisableVertexAttribArray((GLuint)gl.a_pos);
 		ok = true;
 	}
 

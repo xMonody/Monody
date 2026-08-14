@@ -359,6 +359,20 @@ dependency on a wlroots build tree):
   (never the edge-resize / title-strip hover cursors) and must freeze the
   client's mid-drag cursor-shape requests.  Run with `./test-select-drag.sh`
   (auto-asserts PASS/FAIL against the compositor's `WLR_DEBUG` log).
+* `test-resize-cursor.c` + `test-resize-cursor.sh` — cursor stability
+  during edge-resize drags: an SSD client honors configure sizes (real
+  resize behavior) and re-requests its text cursor on every commit, while
+  a virtual pointer presses the LEFT button at the right / bottom / left
+  edges and drags.  The compositor must keep the resize cursor for the
+  whole drag — the only cursor decisions allowed are the hover
+  transitions between drags.  Run with `./test-resize-cursor.sh`
+  (auto-asserts the exact cursor sequence from the `WLR_DEBUG` log).
+* `test-mask-guard.c` + `test-mask-guard.sh` — rounded-mask re-render
+  guard: a client attaches a buffer with damage, then commits without
+  attach/damage (must be skipped), re-attaches the same buffer with
+  damage (must render), then a new buffer (must render).  Run with
+  `./test-mask-guard.sh` (asserts exactly 3 mask renders from the
+  `WLR_DEBUG` log).
 * `test-bar-clamp.c` — layer-shell bars (top/bottom, NULL-output and
   per-output) + a virtual pointer: verifies a dragged window can never
   slide underneath a status bar, and that its top never goes closer than

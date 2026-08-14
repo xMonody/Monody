@@ -13,7 +13,10 @@
  * inner arc.
  *
  * The pass re-runs on every surface commit that carries a buffer, so
- * animations and damage updates stay current.  It uses the same raw-GL-on-
+ * animations and damage updates stay current; commits that leave the
+ * content untouched (no new buffer, no damage, geometry unchanged) are
+ * skipped entirely, and the margin verdict (glReadPixels) is cached per
+ * (buffer, geometry).  It uses the same raw-GL-on-
  * wlroots'-EGL-context approach as border.c.  The client
  * buffer's scale is handled by sampling the texture with normalized
  * coordinates; 90-degree transformed buffers are not supported (the
@@ -144,6 +147,42 @@ static GLuint mask_shader_program(void) {
 	glDeleteShader(fs);
 	wlr_log(WLR_INFO, "mask: GLES2 rounded-content shader ready");
 	return program;
+}
+
+struct mask_gl {
+	GLuint program;
+	GLint u_tex, u_size, u_radius, u_geom, u_geom_clip;
+	GLint a_pos;
+	GLuint vbo;
+};
+
+/* the mask program, its uniform/attrib locations and the shared
+ * fullscreen-quad VBO, initialized once (all-zero on failure).  The
+ * locations and the VBO are cached because every mask render re-uses
+ * them: glGetUniformLocation is a driver-side string lookup and
+ * glGenBuffers/glBufferData/glDeleteBuffers churn a driver object on
+ * every draw (once per commit, once per popup). */
+static struct mask_gl mask_gl(void) {
+	static struct mask_gl gl;
+	static bool tried;
+	if (tried) {
+		return gl;
+	}
+	tried = true;
+	gl.program = mask_shader_program();
+	if (gl.program != 0) {
+		gl.u_tex = glGetUniformLocation(gl.program, "u_tex");
+		gl.u_size = glGetUniformLocation(gl.program, "u_size");
+		gl.u_radius = glGetUniformLocation(gl.program, "u_radius");
+		gl.u_geom = glGetUniformLocation(gl.program, "u_geom");
+		gl.u_geom_clip = glGetUniformLocation(gl.program, "u_geom_clip");
+		gl.a_pos = glGetAttribLocation(gl.program, "a_pos");
+		static const float verts[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+		glGenBuffers(1, &gl.vbo);
+		glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+	}
+	return gl;
 }
 
 /* the format used for masked content render targets */
@@ -412,9 +451,9 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_bound_tex);
 
 	bool ok = false;
-	GLuint program = mask_shader_program();
+	struct mask_gl gl = mask_gl();
 	GLuint fbo = wlr_gles2_renderer_get_buffer_fbo(server->renderer, dst);
-	if (program != 0 && fbo != 0) {
+	if (gl.program != 0 && gl.vbo != 0 && fbo != 0) {
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 		glViewport(0, 0, width, height);
 		glDisable(GL_SCISSOR_TEST);
@@ -422,18 +461,16 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 
-		glUseProgram(program);
-		glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
-		glUniform2f(glGetUniformLocation(program, "u_size"),
-			(float)width, (float)height);
-		glUniform1f(glGetUniformLocation(program, "u_radius"), radius);
-		glUniform4f(glGetUniformLocation(program, "u_geom"),
+		glUseProgram(gl.program);
+		glUniform1i(gl.u_tex, 0);
+		glUniform2f(gl.u_size, (float)width, (float)height);
+		glUniform1f(gl.u_radius, radius);
+		glUniform4f(gl.u_geom,
 			geom != NULL ? (float)geom->x : 0.0f,
 			geom != NULL ? (float)geom->y : 0.0f,
 			geom != NULL ? (float)geom->width : (float)width,
 			geom != NULL ? (float)geom->height : (float)height);
-		glUniform1f(glGetUniformLocation(program, "u_geom_clip"),
-			geom_clip ? 1.0f : 0.0f);
+		glUniform1f(gl.u_geom_clip, geom_clip ? 1.0f : 0.0f);
 
 		glBindTexture(GL_TEXTURE_2D, attribs.tex);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -441,68 +478,17 @@ bool content_mask_render(struct server *server, struct wlr_surface *surface,
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-		GLint loc = glGetAttribLocation(program, "a_pos");
-		static const float verts[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
-		GLuint vbo = 0;
-		glGenBuffers(1, &vbo);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STREAM_DRAW);
-		glEnableVertexAttribArray((GLuint)loc);
-		glVertexAttribPointer((GLuint)loc, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+		glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
+		glEnableVertexAttribArray((GLuint)gl.a_pos);
+		glVertexAttribPointer((GLuint)gl.a_pos, 2, GL_FLOAT, GL_FALSE, 0, NULL);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-		glDisableVertexAttribArray((GLuint)loc);
-		glDeleteBuffers(1, &vbo);
+		glDisableVertexAttribArray((GLuint)gl.a_pos);
 		ok = true;
 		/* the FBO is still bound: probe the margin band for opaque content
-		 * (see mask_margin_has_content) */
+		 * (see mask_margin_has_content).  The caller passes NULL to skip
+		 * the probe when the (buffer, geometry) verdict is cached. */
 		if (geom != NULL && margin_opaque != NULL) {
 			*margin_opaque = mask_margin_has_content(geom, width, height);
-		}
-		/* debug: popup renders (geom == NULL) have no margin handling;
-		 * confirm the four corners were cut (1px inside each corner, deep
-		 * in the cut triangle) */
-		if (geom == NULL) {
-			unsigned char c[4][4];
-			int px[4] = { 1, width - 2, 1, width - 2 };
-			int py[4] = { 1, 1, height - 2, height - 2 };
-			for (int i = 0; i < 4; i++) {
-				if (px[i] >= 0 && py[i] >= 0 && px[i] < width &&
-						py[i] < height) {
-					glReadPixels(px[i], py[i], 1, 1, GL_RGBA,
-						GL_UNSIGNED_BYTE, c[i]);
-				} else {
-					c[i][3] = 255;
-				}
-			}
-			wlr_log(WLR_DEBUG, "mask: popup radius=%d corners TL=%u "
-				"TR=%u BL=%u BR=%u", (int)radius, c[0][3], c[1][3],
-				c[2][3], c[3][3]);
-		}
-		/* debug: confirm the geometry-corner clip cut the four corners
-		 * (1px inside the corner, deep in the cut triangle) */
-		if (geom_clip && geom != NULL) {
-			unsigned char c[4][4];
-			int px[4], py[4];
-			px[0] = geom->x + 1;            py[0] = geom->y + 1;
-			px[1] = geom->x + geom->width - 2;
-			py[1] = geom->y + 1;
-			px[2] = geom->x + 1;
-			py[2] = geom->y + geom->height - 2;
-			px[3] = geom->x + geom->width - 2;
-			py[3] = geom->y + geom->height - 2;
-			for (int i = 0; i < 4; i++) {
-				if (px[i] >= 0 && py[i] >= 0 && px[i] < width &&
-						py[i] < height) {
-					glReadPixels(px[i], py[i], 1, 1, GL_RGBA,
-						GL_UNSIGNED_BYTE, c[i]);
-				} else {
-					c[i][3] = 255; /* outside the buffer: not cut */
-				}
-			}
-			wlr_log(WLR_DEBUG, "mask: geom-clip geom=%d,%d %dx%d "
-				"corners TL=%u TR=%u BL=%u BR=%u",
-				geom->x, geom->y, geom->width, geom->height,
-				c[0][3], c[1][3], c[2][3], c[3][3]);
 		}
 	}
 

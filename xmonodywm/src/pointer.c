@@ -14,6 +14,7 @@
 #include "server.h"
 
 #include <limits.h>
+#include <math.h>
 #include <time.h>
 
 #include <linux/input-event-codes.h>
@@ -557,6 +558,9 @@ static void begin_resize(struct server *server, struct toplevel *tl,
 	server->press_x = server->cursor->x;
 	server->press_y = server->cursor->y;
 	toplevel_box(tl, &server->resize_orig);
+	/* a grab that has not moved yet must not re-request the current size */
+	server->resize_last_w = server->resize_orig.width;
+	server->resize_last_h = server->resize_orig.height;
 	wlr_xdg_toplevel_set_resizing(tl->xdg_toplevel, true);
 	focus_toplevel(server, tl);
 }
@@ -571,19 +575,24 @@ static void update_resize(struct server *server) {
 	double dy = server->cursor->y - server->press_y;
 	struct wlr_box orig = server->resize_orig;
 
+	/* compute the target size with rounding instead of (int) truncation:
+	 * truncating kept the dragged edge up to 1 px behind the cursor and
+	 * quantized sub-pixel mouse motion asymmetrically, so the edge wobbled
+	 * under the cursor while a move (which uses doubles end to end) was
+	 * smooth. */
 	int nw = orig.width;
 	int nh = orig.height;
 	if ((server->resize_edges & WLR_EDGE_RIGHT) != 0) {
-		nw = orig.width + (int)dx;
+		nw = orig.width + (int)llround(dx);
 	}
 	if ((server->resize_edges & WLR_EDGE_LEFT) != 0) {
-		nw = orig.width - (int)dx;
+		nw = orig.width - (int)llround(dx);
 	}
 	if ((server->resize_edges & WLR_EDGE_BOTTOM) != 0) {
-		nh = orig.height + (int)dy;
+		nh = orig.height + (int)llround(dy);
 	}
 	if ((server->resize_edges & WLR_EDGE_TOP) != 0) {
-		nh = orig.height - (int)dy;
+		nh = orig.height - (int)llround(dy);
 	}
 
 	/* clamp to the client's constraints (or a sane fallback) */
@@ -613,6 +622,19 @@ static void update_resize(struct server *server) {
 	 * (moving it first would render the old, still-larger buffer at the
 	 * moved position and make the opposite edge bounce); a bottom/right
 	 * grab needs no move since the top-left corner stays fixed. */
+	/* only send a configure when the target size actually changed:
+	 * wlr_xdg_toplevel_set_size always schedules one, so repeating the
+	 * same size on every motion event (sub-pixel deltas, or a client that
+	 * has not committed yet) would push a configure -> commit -> mask/
+	 * border GPU re-render cycle through the client on every event.  That
+	 * synchronous per-commit GL work is what makes a resize drag stutter
+	 * (and a software cursor with it) while a move - no round trip, no
+	 * GL - stays smooth. */
+	if (nw == server->resize_last_w && nh == server->resize_last_h) {
+		return;
+	}
+	server->resize_last_w = nw;
+	server->resize_last_h = nh;
 	wlr_xdg_toplevel_set_size(tl->xdg_toplevel, nw, nh);
 	update_toplevel_decoration(tl);
 }

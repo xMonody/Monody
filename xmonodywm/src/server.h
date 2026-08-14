@@ -141,6 +141,8 @@ struct mask_popup {
 	 * the popup surface's buffer is re-rendered through the alpha mask, so
 	 * the popup corners get CONFIG_BORDER_RADIUS like the windows */
 	struct wlr_scene_buffer *masked;
+	/* buffer the popup mask was last rendered from (re-render guard) */
+	struct wlr_client_buffer *mask_buf;
 	/* the popup's thin rounded ring (border.c): outlines the rounded
 	 * corners so they stay visible even when popup content and the
 	 * background share a color (a white menu over a white window) */
@@ -185,6 +187,20 @@ struct toplevel {
 	 * transparent drop shadow (Firefox/GTK CSD) this stays false and the
 	 * geometry - the window bounds per xdg-shell - is used. */
 	bool wrap_surface;
+
+	/* mask re-render cache (mask.c): `mask_buf`/`mask_geom` are the
+	 * buffer and geometry the masked content was last rendered from, so a
+	 * commit that neither attaches a new buffer nor damages the surface
+	 * nor moves the geometry can skip the whole pass (no buffer
+	 * allocation, no GL, no texture upload).  `wrap_probe_buf`/
+	 * `wrap_probe_geom` are the key the wrap_surface margin verdict was
+	 * computed for: the probe (glReadPixels) only re-runs when the buffer
+	 * or the geometry changes, not on every re-render of the same
+	 * buffer. */
+	struct wlr_client_buffer *mask_buf;
+	struct wlr_box mask_geom;
+	struct wlr_client_buffer *wrap_probe_buf;
+	struct wlr_box wrap_probe_geom;
 
 	/* rounded-corner masked content: the client's buffer re-rendered through
 	 * an alpha mask (mask.c) into `masked`; the xdg surface's own scene
@@ -399,6 +415,7 @@ struct server {
 	struct toplevel *resize_toplevel;
 	uint32_t resize_edges;     /* enum wlr_edges */
 	struct wlr_box resize_orig; /* window box at grab start */
+	int resize_last_w, resize_last_h; /* size last sent to the client */
 
 	/* current compositor-driven cursor name, NULL when the client's cursor
 	 * is shown (used to avoid redundant updates) */

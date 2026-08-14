@@ -994,7 +994,9 @@ static void mask_signal_syncobj_release(struct wlr_surface *surface,
 }
 
 /* re-render the popup's rounded content from its current buffer; called on
- * every commit that carries a buffer (same contract as mask_toplevel_content) */
+ * every commit that carries a buffer (same contract as mask_toplevel_content).
+ * Commits that leave the content untouched (no new buffer, no damage) skip
+ * the whole pass. */
 static void mask_popup_content(struct mask_popup *mp) {
 	struct wlr_xdg_surface *base = mp->popup->base;
 	if (mp->masked == NULL || base == NULL || !base->initialized ||
@@ -1002,6 +1004,12 @@ static void mask_popup_content(struct mask_popup *mp) {
 		return;
 	}
 	struct wlr_surface *surface = base->surface;
+	if (surface->buffer == mp->mask_buf &&
+			!pixman_region32_not_empty(&surface->current.surface_damage) &&
+			!pixman_region32_not_empty(&surface->current.buffer_damage)) {
+		return;
+	}
+	mp->mask_buf = surface->buffer;
 	int w = surface->current.width;
 	int h = surface->current.height;
 	if (w <= 0 || h <= 0) {
@@ -1387,8 +1395,11 @@ static void mask_subsurfaces_reposition(struct toplevel *tl) {
 }
 
 /* re-render the rounded-corner masked content from the surface's current
- * buffer; called on every commit that carries a buffer so animations and
- * damaged partial redraws stay current */
+ * buffer; called on every commit so animations and damaged partial
+ * redraws stay current.  Commits that leave the content untouched (no new
+ * buffer, no damage, geometry unchanged) skip the whole pass; the
+ * wrap_surface margin probe (glReadPixels) only re-runs when the buffer
+ * or the geometry changed. */
 void mask_toplevel_content(struct toplevel *tl) {
 	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
 	if (tl->masked == NULL || base == NULL || !base->initialized ||
@@ -1396,6 +1407,19 @@ void mask_toplevel_content(struct toplevel *tl) {
 		return;
 	}
 	struct wlr_surface *surface = base->surface;
+	/* commit guard: a commit that neither attached a new buffer nor
+	 * damaged the surface nor moved the window geometry leaves the mask
+	 * content identical - skip the buffer allocation, the GL pass and the
+	 * texture upload entirely.  (The surface size cannot change without a
+	 * new buffer, so the buffer pointer covers it.) */
+	if (surface->buffer == tl->mask_buf &&
+			!pixman_region32_not_empty(&surface->current.surface_damage) &&
+			!pixman_region32_not_empty(&surface->current.buffer_damage) &&
+			wlr_box_equal(&base->geometry, &tl->mask_geom)) {
+		return;
+	}
+	tl->mask_buf = surface->buffer;
+	tl->mask_geom = base->geometry;
 	int w = surface->current.width;
 	int h = surface->current.height;
 	wlr_log(WLR_DEBUG, "mask: %s surface=%dx%d scale=%d buf=%dx%d geo=%d,%d %dx%d",
@@ -1415,18 +1439,28 @@ void mask_toplevel_content(struct toplevel *tl) {
 		return;
 	}
 	/* the geometry probe decides whether the border wraps the xdg window
-	 * geometry or the committed surface (see mask_margin_has_content) */
+	 * geometry or the committed surface (see mask_margin_has_content).
+	 * The verdict only depends on the buffer + geometry: when neither
+	 * changed since the last render, reuse the cached wrap_surface and
+	 * skip the readback. */
+	bool need_probe = surface->buffer != tl->wrap_probe_buf ||
+		!wlr_box_equal(&base->geometry, &tl->wrap_probe_geom);
 	bool margin_opaque = false;
+	bool *probe_out = need_probe ? &margin_opaque : NULL;
 	/* first pass without the geometry-corner clip: the margin probe must
 	 * read the surface's own alpha, and the clip is only valid once we
 	 * know the margin is a transparent shadow (not real content) */
 	if (!content_mask_render(tl->server, surface, buf, w, h, radius,
-			&base->geometry, false, &margin_opaque)) {
+			&base->geometry, false, probe_out)) {
 		mask_signal_syncobj_release(surface, buf);
 		wlr_buffer_drop(buf);
 		return;
 	}
-	tl->wrap_surface = margin_opaque;
+	if (need_probe) {
+		tl->wrap_surface = margin_opaque;
+		tl->wrap_probe_buf = surface->buffer;
+		tl->wrap_probe_geom = base->geometry;
+	}
 	/* second pass, only for windows whose border trusts the geometry but
 	 * whose surface is larger (GTK CSD shadows, e.g. Firefox): round the
 	 * window-geometry corners too, so the content's sharp corners are cut
