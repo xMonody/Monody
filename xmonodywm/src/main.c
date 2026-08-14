@@ -23,6 +23,7 @@
 
 #include "ipc.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <signal.h>
@@ -59,64 +60,128 @@
  *     tty, and the process can never block on a terminal read/write
  *   - _exit(127) if exec fails: never fall through into the compositor */
 void spawn_command(const char *cmd) {
-	pid_t pid = fork();
-	if (pid != 0) {
+	if (cmd == NULL || cmd[0] == '\0') {
 		return;
 	}
-	setsid();
-	int devnull = open("/dev/null", O_RDWR);
-	if (devnull >= 0) {
-		dup2(devnull, STDIN_FILENO);
-		dup2(devnull, STDOUT_FILENO);
-		dup2(devnull, STDERR_FILENO);
-		if (devnull > STDERR_FILENO) {
-			close(devnull);
-		}
+
+	pid_t pid = fork();
+
+	if (pid < 0) {
+		wlr_log(WLR_ERROR, "spawn: fork failed for \"%s\": %s", cmd, strerror(errno));
+		return;
 	}
-	execl("/bin/sh", "/bin/sh", "-c", cmd, (void *)NULL);
+
+	if (pid > 0) {
+		wlr_log(WLR_DEBUG, "spawn: spawned \"%s\" (pid %ld)", cmd, (long)pid);
+		return;
+	}
+
+	if (setsid() == -1) {
+		_exit(127);
+	}
+
+	int devnull = open("/dev/null", O_RDWR);
+
+	if (devnull < 0) {
+		_exit(127);
+	}
+
+	if (dup2(devnull, STDIN_FILENO) == -1) {
+		close(devnull);
+		_exit(127);
+	}
+
+	if (dup2(devnull, STDOUT_FILENO) == -1) {
+		close(devnull);
+		_exit(127);
+	}
+
+	if (dup2(devnull, STDERR_FILENO) == -1) {
+		close(devnull);
+		_exit(127);
+	}
+
+	if (devnull > STDERR_FILENO) {
+		close(devnull);
+	}
+
+	execl("/bin/sh", "/bin/sh", "-c", cmd, (char *)NULL);
+
 	_exit(127);
 }
 
-/* reap spawned children (startup commands, the -s command, the terminal
- * shortcut) so exited helpers don't pile up as zombies */
 static void reap_children(int sig) {
 	(void)sig;
+
+	int saved_errno = errno;
 	while (waitpid(-1, NULL, WNOHANG) > 0) {
+	}
+
+	errno = saved_errno;
+}
+
+/* install the SIGCHLD handler (called once from main()) */
+static void init_reaper(void) {
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = reap_children;
+	sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+	sigemptyset(&sa.sa_mask);
+
+	if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+		wlr_log(WLR_ERROR,
+			"init_reaper: failed to install SIGCHLD handler: %s",
+			strerror(errno));
 	}
 }
 
-/* launch the user's startup commands, one per line, from
- * $XDG_CONFIG_HOME/mywm/run (or ~/.config/mywm/run): daemons, wallpapers,
- * output configuration, input methods, ...  Blank lines and lines starting
- * with '#' are ignored.  Each line is run through /bin/sh -c, so ~, $VARS,
- * quotes and shell syntax all work.  Called only after the backend is up
- * and WAYLAND_DISPLAY is set, so the commands can talk to the compositor. */
 static void run_startup_file(void) {
 	const char *xdg = getenv("XDG_CONFIG_HOME");
 	const char *home = getenv("HOME");
+
 	char path[4096];
+
 	if (xdg != NULL && xdg[0] != '\0') {
-		snprintf(path, sizeof(path), "%s/mywm/run", xdg);
+		int ret = snprintf(path, sizeof(path), "%s/xmonodywm/run", xdg);
+
+		if (ret < 0 || (size_t)ret >= sizeof(path)) {
+			wlr_log(WLR_ERROR, "run_startup_file: configuration path is too long");
+			return;
+		}
 	} else if (home != NULL && home[0] != '\0') {
-		snprintf(path, sizeof(path), "%s/.config/mywm/run", home);
+		int ret = snprintf(path, sizeof(path), "%s/.config/xmonodywm/run", home);
+		if (ret < 0 || (size_t)ret >= sizeof(path)) { wlr_log(WLR_ERROR,
+				"run_startup_file: configuration path is too long");
+			return;
+		}
 	} else {
+		wlr_log(WLR_DEBUG,
+			"run_startup_file: HOME and XDG_CONFIG_HOME are not set");
 		return;
 	}
 
 	FILE *f = fopen(path, "r");
+
 	if (f == NULL) {
-		wlr_log(WLR_DEBUG, "startup: no %s, nothing to run", path);
+		if (errno == ENOENT) {
+			wlr_log(WLR_DEBUG, "run_startup_file: no %s, nothing to run", path);
+		} else {
+			wlr_log(WLR_ERROR, "run_startup_file: failed to open %s: %s", path, strerror(errno));
+		}
+
 		return;
 	}
 
 	char *line = NULL;
 	size_t cap = 0;
 	ssize_t len;
+
 	while ((len = getline(&line, &cap, f)) != -1) {
 		/* strip the trailing newline / carriage return */
 		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
 			line[--len] = '\0';
 		}
+
 		/* skip leading whitespace, blank lines and comments */
 		char *cmd = line;
 		while (*cmd == ' ' || *cmd == '\t') {
@@ -125,53 +190,9 @@ static void run_startup_file(void) {
 		if (*cmd == '\0' || *cmd == '#') {
 			continue;
 		}
-		/* drop a trailing shell comment (a '#' outside quotes/escapes) and
-		 * any trailing '&' / ';' / whitespace, so every line can safely be
-		 * backgrounded below: an explicit '&' already present would turn
-		 * into a 'cmd & &' syntax error, and a trailing comment would
-		 * swallow the appended '&' */
-		char *comment = NULL;
-		char quote = '\0';
-		for (char *p = cmd; *p != '\0'; p++) {
-			if (quote != '\0') {
-				if (*p == quote) {
-					quote = '\0';
-				} else if (*p == '\\' && quote == '"') {
-					p++; /* escaped char inside double quotes */
-				}
-			} else if (*p == '\'' || *p == '"') {
-				quote = *p;
-			} else if (*p == '\\') {
-				p++; /* escaped char (e.g. \#): skip both */
-			} else if (*p == '#') {
-				comment = p;
-				break;
-			}
-		}
-		if (comment != NULL) {
-			*comment = '\0';
-		}
-		char *end = cmd + strlen(cmd);
-		while (end > cmd && (end[-1] == ' ' || end[-1] == '\t' ||
-				end[-1] == '&' || end[-1] == ';')) {
-			*--end = '\0';
-		}
-		if (*cmd == '\0') {
-			continue; /* e.g. the line was only a comment */
-		}
-		/* launch every line in the background */
-		size_t cmdlen = strlen(cmd);
-		char *bg = malloc(cmdlen + 3);
-		if (bg == NULL) {
-			continue;
-		}
-		memcpy(bg, cmd, cmdlen);
-		bg[cmdlen] = ' ';
-		bg[cmdlen + 1] = '&';
-		bg[cmdlen + 2] = '\0';
-		wlr_log(WLR_INFO, "startup: %s", bg);
-		spawn_command(bg);
-		free(bg);
+
+		wlr_log(WLR_INFO, "run_startup_file: executing: %s", cmd);
+		spawn_command(cmd);
 	}
 	free(line);
 	fclose(f);
@@ -183,11 +204,7 @@ int main(int argc, char *argv[]) {
 	const char *dbg = getenv("WLR_DEBUG");
 	wlr_log_init(dbg != NULL && dbg[0] != '\0' ? WLR_DEBUG : WLR_INFO, NULL);
 	/* never leave spawned helpers as zombies */
-	struct sigaction chld_sa = {0};
-	chld_sa.sa_handler = reap_children;
-	sigemptyset(&chld_sa.sa_mask);
-	chld_sa.sa_flags = SA_RESTART;
-	sigaction(SIGCHLD, &chld_sa, NULL);
+	init_reaper();
 
 	char *startup_cmd = NULL;
 	int c;
