@@ -10,7 +10,7 @@
  * Modules:
  *   ipc.c      - status-bar socket (JSON events)
  *   scene.c    - scene-graph tagging / hit-testing
- *   toplevel.c - xdg-shell windows, window state, scenefx decorations
+ *   toplevel.c - xdg-shell windows, window state
  *   layer.c    - wlr-layer-shell surfaces + work area
  *   output.c   - monitors + wlr-output-management
  *   input.c    - seat, keyboard, shortcuts
@@ -44,8 +44,7 @@
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_shm.h>
 
-#include <scenefx/render/fx_renderer/fx_renderer.h>
-#include <scenefx/types/wlr_scene.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
@@ -247,7 +246,7 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "failed to create backend");
 		return EXIT_FAILURE;
 	}
-	server.renderer = fx_renderer_create(server.backend);
+	server.renderer = wlr_renderer_autocreate(server.backend);
 	if (server.renderer == NULL) {
 		wlr_log(WLR_ERROR, "failed to create renderer");
 		return EXIT_FAILURE;

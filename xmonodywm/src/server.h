@@ -11,7 +11,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
-/* all tunables (shortcuts, border radius, edge grab zone) */
+/* all tunables (shortcuts, edge grab zone) */
 #include "config.h"
 
 #include <stdbool.h>
@@ -61,8 +61,7 @@ struct scene_tag {
 	struct wl_listener destroy; /* frees the tag when the node is destroyed */
 };
 
-/* scenefx's scene-graph API (rounded corners, shadows, borders) */
-#include <scenefx/types/wlr_scene.h>
+#include <wlr/types/wlr_scene.h>
 
 struct ipc_client;     /* defined in ipc.c */
 struct wlr_swapchain;  /* defined in wlr/render/swapchain.h */
@@ -119,18 +118,6 @@ struct text_input {
 	struct wl_listener commit;
 };
 
-/* a subsurface of a toplevel's surface (Firefox/Chromium cover the window
- * edges with subsurfaces); its commit re-applies the unified window
- * rounded-region mask so the subsurface stays clipped to the same rounded
- * region as the main surface */
-struct toplevel_subsurface {
-	struct toplevel *tl;
-	struct wlr_subsurface *subsurface;
-	struct wl_list link; /* tl->subsurfaces */
-	struct wl_listener commit;
-	struct wl_listener destroy;
-};
-
 /* an xdg popup (menu / tooltip / combo box) under a toplevel's content
  * tree; rendered with wlr_scene_xdg_surface_create so subsurfaces are
  * handled and nested popups (Qt submenus) attach recursively.  The struct's
@@ -141,7 +128,6 @@ struct toplevel_popup {
 	struct toplevel *tl;
 	struct wlr_xdg_popup *popup;
 	struct wlr_scene_tree *tree;
-	struct wlr_scene_rect *border;    /* thin rounded ring (scenefx) */
 	struct wl_listener tree_destroy;  /* frees pp when the tree is destroyed */
 	struct wl_listener commit;
 	struct wl_listener new_popup;
@@ -155,25 +141,8 @@ struct toplevel {
 	struct wlr_foreign_toplevel_handle_v1 *fthandle;
 	struct wlr_output *last_output;
 
-	/* scenefx decorations: a rounded border ring (wlr_scene_rect with a
-	 * clipped hole) and a soft shadow (wlr_scene_shadow) live inside
-	 * scene_tree, lowered below the content */
-	struct wlr_scene_rect *border;
-	struct wlr_scene_shadow *shadow;
-	uint32_t border_color;            /* color the border was last set to */
-	/* subsurfaces of the window surface (their commits re-apply the unified
-	 * window rounded-region mask); cleaned up together with the toplevel */
-	struct wl_list subsurfaces;      /* struct toplevel_subsurface.link */
 	/* popups are scene-tree children of scene_tree and clean themselves up
 	 * when their tree is destroyed, so no explicit popup list is needed */
-	/* the ring's top edge: a smooth three-color gradient band (minimize /
-	 * maximize-restore / close, with blended seams) rendered by scenefx's
-	 * gradient pass into a small texture stretched over the top band */
-	struct wlr_scene_buffer *band;
-	bool band_rendered;        /* gradient buffer has been rendered */
-	int band_width;            /* band width the gradient was rendered for */
-	uint32_t band_colors[3];   /* segment colors the gradient was rendered with */
-	uint32_t band_base;        /* ring color the gradient ends fade into */
 
 	/* xdg-decoration */
 	struct wlr_xdg_toplevel_decoration_v1 *decoration;
@@ -223,7 +192,6 @@ struct toplevel {
 	struct wl_listener set_title;
 	struct wl_listener set_app_id;
 	struct wl_listener new_popup;
-	struct wl_listener new_subsurface;
 
 	struct wl_listener ft_request_maximize;
 	struct wl_listener ft_request_minimize;
@@ -465,8 +433,6 @@ void maximized_box(struct server *server, struct wlr_output *output,
 	struct wlr_box *box);
 void server_new_toplevel(struct wl_listener *listener, void *data);
 void server_new_decoration(struct wl_listener *listener, void *data);
-/* (re)build the scenefx border/shadow around the toplevel */
-void update_toplevel_decoration(struct toplevel *tl);
 
 /* ---- place.c: initial window placement ----
  * size fully client-driven, position centered on the output (screen) */

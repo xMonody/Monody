@@ -1,8 +1,8 @@
 /*
  * config.h - compile-time configuration for xmonodywm
  *
- * All the tunables live here: window decorations (rounded border), the
- * resize/move grab zone, and the compositor keyboard shortcuts.  Edit the values and rebuild.
+ * All the tunables live here: the resize/move grab zone and the compositor
+ * keyboard shortcuts.  Edit the values and rebuild.
  */
 
 #ifndef XMONODYWM_CONFIG_H
@@ -16,42 +16,8 @@
 #define CONFIG_TITLEBAR_CURSOR "pointer"      /* cursor shown while hovering the title strip */
 #define CONFIG_MOVE_CURSOR     "all-scroll"   /* cursor shown while dragging (moving) a window */
 
-#define CONFIG_BORDER_WIDTH     1.5         /* 边框可见粗细 */
-#define CONFIG_BORDER_RADIUS    8           /* 边框圆角 (px) */
-#define CONFIG_TITLEBAR_HEIGHT  8           /* 移动窗口边框范围 */
+#define CONFIG_TITLEBAR_HEIGHT  8           /* 移动窗口标题栏范围 */
 #define CONFIG_EDGE_THICKNESS   8           /* 调整窗口大小边框范围 */
-
-#define CONFIG_MAXIMIZED_GAP     0.5            /* 边框和屏幕间距 */
-#define CONFIG_MAXIMIZED_GAP_BAR 0.5          /* 边框和状态栏间距 */
-#define CONFIG_BAR_TOP_OVERLAP   0.5            /* 窗口顶部相对状态栏的偏移(px) */
-
-#define CONFIG_FULLSCREEN_BORDER_COLOR  0xFF87BEAAu /* 全屏窗口的边框颜色  */
-#define CONFIG_FULLSCREEN_GAP          1.5          // 全屏窗口与屏幕边缘的间距 (px)
-#define CONFIG_MAXIMIZED_BORDER_ENABLED 1.5         /* 最大化时是否显示边框 */
-
-#define CONFIG_BORDER_COLOR           0xFF676E95u   /* 0xFF7C73B0u  活动窗口 (#7C73B0) */
-#define CONFIG_BORDER_COLOR_UNFOCUSED 0xFF676E95u   /*  非活动窗口(#676E95) */
-
-/* 顶部边框三段颜色: 左(最小化) / 中(最大化/还原) / 右(关闭) */
-#define CONFIG_BORDER_COLOR_MIN   0xFFF5A3A3u   /* 左段: 最小化 (#f5a3a3) */
-#define CONFIG_BORDER_COLOR_MAX   0xFF87BEAAu   /* 中段: 最大化/还原 (#87beaa) */
-#define CONFIG_BORDER_COLOR_CLOSE 0xFFD55F6Fu   /* 右段: 关闭 (#d55f6f) */
-
-#define CONFIG_BORDER_BAND_BLEND 10   /* 顶部三段色拼接处的渐变宽度 (px) */
-
-/* popup (菜单/提示框/下拉框) 边框 */
-#define CONFIG_POPUP_BORDER_ENABLED 0           /* 是否绘制 popup 边框 (0=不绘制) */
-#define CONFIG_POPUP_BORDER_WIDTH   1            /* popup 边框宽度 (px) */
-#define CONFIG_POPUP_BORDER_COLOR   0xFF676E95u    /* popup 边框颜色, 0xAARRGGBB */
-
-/* scenefx 窗口阴影. 把 CONFIG_SHADOW_ENABLED 设为 0 即可完全关闭.
- * 只有聚焦窗口绘制阴影, 非聚焦窗口不绘制. */
-#define CONFIG_SHADOW_ENABLED    1           /* 是否绘制窗口阴影 */
-#define CONFIG_SHADOW_BLUR_SIGMA 25.0f    /* 阴影高斯模糊 sigma (px) */
-#define CONFIG_SHADOW_COLOR      0x66000000u   /* 阴影颜色, 0xAARRGGBB */
-#define CONFIG_SHADOW_OFFSET_X   0          /* 阴影相对窗口的水平偏移 (px) */
-#define CONFIG_SHADOW_OFFSET_Y   0          /* 阴影相对窗口的垂直偏移 (px) */
-
 
 #define CONFIG_DOUBLE_CLICK_NS (400 * 1000000L) /* double-click window (ns) */
 #define CONFIG_LONG_PRESS_NS (350 * 1000000L) /* holding the strip this long grabs the window (ns) */

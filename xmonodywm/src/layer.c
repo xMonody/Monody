@@ -11,7 +11,7 @@
 #include <stdlib.h>
 
 #include <wlr/types/wlr_output_layout.h>
-#include <scenefx/types/wlr_scene.h>
+#include <wlr/types/wlr_scene.h>
 
 static int scene_layer_index(enum zwlr_layer_shell_v1_layer layer) {
 	switch (layer) {

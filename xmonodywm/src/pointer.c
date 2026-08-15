@@ -21,15 +21,14 @@
 
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_pointer.h>
-#include <scenefx/types/wlr_scene.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/edges.h>
 #include <wlr/util/log.h>
 
 /* is the cursor over the visible title strip of an undecorated window?  The
- * strip spans the window width: the ring's top overhang plus
- * CONFIG_TITLEBAR_HEIGHT px of the content, split into three colored
- * segments (minimize / maximize / close). */
+ * strip spans the window width: the top CONFIG_TITLEBAR_HEIGHT px of the
+ * content, split into three gesture segments (minimize / maximize / close). */
 static bool is_in_titlebar_zone(struct server *server, struct toplevel *tl) {
 	/* a popup (menu / dropdown) floating over the strip wins the pointer:
 	 * no move / minimize / maximize / close grab while the cursor is on it */
@@ -55,7 +54,7 @@ static bool is_in_titlebar_zone(struct server *server, struct toplevel *tl) {
 	double lx = server->cursor->x;
 	double ly = server->cursor->y;
 	return lx >= box.x && lx < box.x + box.width &&
-		ly >= box.y - CONFIG_BORDER_WIDTH &&
+		ly >= box.y &&
 		ly < box.y + CONFIG_TITLEBAR_HEIGHT;
 }
 
@@ -159,16 +158,8 @@ static void clamp_drag_position(struct server *server, struct toplevel *tl,
 		}
 	}
 	if (area.y > out.y) {           /* bar at the top */
-		/* same limit as restore: the maximized window's top pixel shifted by
-		 * CONFIG_BAR_TOP_OVERLAP, so dragging stops exactly where
-		 * maximize/restore do (CONFIG_BAR_TOP_OVERLAP = -CONFIG_MAXIMIZED_GAP_BAR
-		 * stops the window at the maximized position) */
-		struct wlr_box mbox;
-		maximized_box(server, output, &mbox);
-		double top_limit = mbox.y + CONFIG_BAR_TOP_OVERLAP
-			+ CONFIG_MAXIMIZED_GAP_BAR;
-		if (*y < top_limit) {
-			*y = top_limit;
+		if (*y < area.y) {
+			*y = area.y;
 		}
 	}
 	if (area.x + area.width < out.x + out.width) { /* bar at the right */
@@ -237,7 +228,6 @@ static void move_toplevel_to(struct server *server, double lx, double ly) {
 	double ny = ly - server->grab_y;
 	clamp_drag_position(server, tl, &nx, &ny);
 	wlr_scene_node_set_position(&tl->scene_tree->node, nx, ny);
-	update_toplevel_decoration(tl);
 }
 
 /* turn a press on the title strip into a move grab: the grab anchors at the
@@ -647,7 +637,6 @@ static void update_resize(struct server *server) {
 	server->resize_last_w = nw;
 	server->resize_last_h = nh;
 	wlr_xdg_toplevel_set_size(tl->xdg_toplevel, nw, nh);
-	update_toplevel_decoration(tl);
 }
 
 void end_resize(struct server *server) {

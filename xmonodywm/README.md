@@ -5,28 +5,17 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 ## Design
 
 * Floating windows only — no tiling, no tabs.
-* The compositor draws a **rounded border** (`#676E95`, `CONFIG_BORDER_WIDTH`
-  px stroke, `CONFIG_BORDER_RADIUS` px corner radius) around undecorated
-  windows and a **soft shadow** behind floating windows.  Both are provided
-  by **scenefx**: the whole window's rounded region (the window-geometry
-  box with the content corner radius) is computed once and applied as a
-  unified clip/mask to every surface that belongs to the window (CSD
-  windows have several — the main surface plus its subsurfaces); each
-  surface node keeps its own buffer and is drawn directly, expressed per
-  node with `wlr_scene_buffer_set_corner_radius`.  The border is a
-  `wlr_scene_rect` with a rounded hole clipped out of it, and the shadow is
-  a `wlr_scene_shadow` node lowered below the border.  All parameters
-  (`CONFIG_BORDER_*`, `CONFIG_SHADOW_*`) live in `config.h`; client-side
-  decorated windows keep their native decorations.  **Fullscreen windows
-  keep the same rounded corners as maximized ones** (only the border color
-  switches to `CONFIG_FULLSCREEN_BORDER_COLOR`), so the corners never
-  disappear when a window goes fullscreen.
+* The compositor draws **no window decorations of its own**: client-side
+  decorated windows keep their native controls, and undecorated windows get
+  only invisible grab zones (title strip and resize edges).  The previous
+  rounded-corner / border-ring / shadow decorations (scenefx) have been
+  removed.
 * **Client-side decorated** windows (mode `CLIENT_SIDE` via xdg-decoration, or
   apps with their own header bars) keep their native controls: the client's own
   title bar moves the window through `xdg_toplevel.move`, its buttons work, its
   edges resize natively, and `request_maximize` / `request_minimize` are honored.
-* **Server-side / undecorated** windows get a *visible* frame owned by the
-  compositor: a single-color rounded border ring plus grab zones around the
+* **Server-side / undecorated** windows get an *invisible* frame owned by the
+  compositor: grab zones around the
   left/right/bottom edges and corners, and a title strip across the top
   whose left/middle/right thirds map to minimize / maximize-restore / close;
   the cursor style updates as soon as the pointer enters them and reverts
@@ -117,13 +106,12 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 
 ```
 src/
-  config.h    all tunables: shortcuts, border radius, edge grab zone
+  config.h    all tunables: shortcuts, edge grab zone
   server.h    shared structs (server/toplevel/layer_surface) + cross-module API
   main.c      entry point: display/backend/scene setup, protocol globals, run loop
   ipc.c/h     status-bar socket (JSON over a Unix domain socket)
   scene.c     scene-graph tagging / hit-testing helpers
-  toplevel.c  xdg-shell windows, window state (max/min/fullscreen), scenefx
-              decorations (rounded corners, border ring, shadow)
+  toplevel.c  xdg-shell windows, window state (max/min/fullscreen)
   layer.c     wlr-layer-shell surfaces + work area
   output.c    monitors, output layout, wlr-output-management
   input.c     seat, keyboard, compositor shortcuts
@@ -198,12 +186,8 @@ layers (bottom -> top):
 ```
 
 Layer-shell exclusive zones shrink the work area that maximized windows use.
-A maximized window is never flush against the work area: the side facing a
-status bar (exclusive zone at the top or bottom) is flush with it
-(`CONFIG_MAXIMIZED_GAP_BAR` = 0.5 by default), and the other three sides
-are flush too (`CONFIG_MAXIMIZED_GAP` = 0.5): a maximized window fills the
-whole work area, its border ring sitting `CONFIG_MAXIMIZED_GAP` px away
-from the bar / screen edges.
+A maximized window fills the work area exactly, flush against any
+layer-shell status bars' exclusive zones.
 
 ## Build
 
@@ -253,22 +237,8 @@ Everything tunable lives in **`src/config.h`** (edit and rebuild):
 
 | option | meaning | default |
 |---|---|---|
-| `CONFIG_BORDER_RADIUS` | rounded-corner radius of the border ring (px) | `8` |
-| `CONFIG_BORDER_WIDTH` | border stroke thickness (px) | `1.5` |
-| `CONFIG_BORDER_COLOR` / `CONFIG_BORDER_COLOR_UNFOCUSED` | border ring color, focused / unfocused (`0xAARRGGBB`) | `#676E95` / `#676E95` |
-| `CONFIG_BORDER_COLOR_MIN` / `_MAX` / `_CLOSE` | top-border segment colors: left (minimize) / middle (maximize-restore) / right (close) | `#f5a3a3` / `#87beaa` / `#d55f6f` |
-| `CONFIG_BORDER_BAND_BLEND` | gradient width at the seams between the three top-band segment colors (px); the whole top band is rendered as a smooth ramp | `15` |
-| `CONFIG_SHADOW_ENABLED` | draw a soft shadow behind floating windows (`0` = off) | `1` |
-| `CONFIG_SHADOW_BLUR_SIGMA` | scenefx shadow gaussian blur sigma (px) | `20` |
-| `CONFIG_SHADOW_COLOR` | shadow color (`0xAARRGGBB`) | `0x66000000` |
-| `CONFIG_SHADOW_OFFSET_X` / `CONFIG_SHADOW_OFFSET_Y` | shadow offset relative to the window (px) | `0` / `0` |
-| `CONFIG_POPUP_BORDER_ENABLED` | draw a border around popups (menu/tooltip/combo) (`0` = off) | `0` |
-| `CONFIG_POPUP_BORDER_WIDTH` / `CONFIG_POPUP_BORDER_COLOR` | popup border stroke / color (`0xAARRGGBB`) | `1` / `#676E95` |
-| `CONFIG_MAXIMIZED_BORDER_ENABLED` | non-zero: maximized windows keep the border; `0`: no border when maximized | `1.5` |
-| `CONFIG_FULLSCREEN_GAP` | fullscreen window inset from the screen edges (px) so the border ring around a fullscreen window stays visible (`0` = ring flush with the screen edge) | `1.5` |
-| `CONFIG_FULLSCREEN_BORDER_COLOR` | border color of fullscreen windows (`0xAARRGGBB`) | `#87BEAA` |
 | `CONFIG_EDGE_THICKNESS` | grab zone on window edges/corners for move+resize (px) | `8` |
-| `CONFIG_TITLEBAR_HEIGHT` | colored title strip at the window top (px) | `8` |
+| `CONFIG_TITLEBAR_HEIGHT` | title strip grab zone at the window top (px) | `8` |
 | `CONFIG_LONG_PRESS_NS` | holding the strip this long grabs the window for moving (ns) | `350 ms` |
 | `CONFIG_WHEEL_DEBOUNCE_ENABLED` / `CONFIG_WHEEL_BURST_NS` / `CONFIG_WHEEL_TICK_GAP_NS` | right-hold + wheel: coalesce rapid ticks (bool) / one continuous scroll = one action for at most this long / two ticks this far apart = next action | `false` / `800 ms` / `300 ms` |
 | `CONFIG_MOD_MAIN` / `CONFIG_KEY_*` | shortcut modifier combo / keysyms (see below) | `Shift+Alt` |

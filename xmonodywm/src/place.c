@@ -28,7 +28,7 @@
 #include "server.h"
 
 #include <wlr/types/wlr_output_layout.h>
-#include <scenefx/types/wlr_scene.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
 
 /* center a toplevel on the output under the cursor (falling back to the

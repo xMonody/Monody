@@ -5,39 +5,28 @@
  * minimize, fullscreen, move, close), xdg-decoration mode negotiation and
  * the foreign-toplevel handle that mirrors each window for taskbars.
  *
- * Decorations (rounded corners, border ring, shadow) are provided by
- * scenefx: the whole window's rounded region (the window-geometry box with
- * the content corner radius) is computed once and applied as a unified
- * clip/mask to every surface that belongs to the xdg_toplevel - each
- * surface node keeps its own buffer and is drawn directly, the region is
- * expressed per node with wlr_scene_buffer_set_corner_radius.  The border
- * is a wlr_scene_rect with a rounded hole clipped out of it, and the
- * shadow is a wlr_scene_shadow node lowered below the border.  All
- * parameters come from config.h.
+ * The compositor draws no window decorations of its own: client-side
+ * decorated windows keep their native controls, and undecorated windows
+ * get only the compositor's invisible grab zones (title strip and resize
+ * edges) handled in pointer.c.
  */
 
 #include "server.h"
 
 #include "ipc.h"
 
-#include <drm_fourcc.h>
-#include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
-#include <wlr/interfaces/wlr_buffer.h>
-#include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
-#include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <wlr/util/box.h>
 #include <wlr/util/edges.h>
-
-#include <scenefx/types/wlr_scene.h>
 
 /* effective window geometry box in layout coordinates: the xdg window
  * geometry (the window bounds per xdg-shell, excluding CSD margins/drop
@@ -103,21 +92,9 @@ static void clamp_to_work_area(struct server *server, int *x, int *y,
 	}
 	struct wlr_box area;
 	get_work_area(server, output, &area);
-	/* when a bar sits above the work area, the top limit is taken from the
-	 * maximized geometry itself (maximized_box truncates CONFIG_BORDER_WIDTH
-	 * and the bar gap to int exactly like maximize does), so restore always
-	 * lands on the same pixel the maximized window occupied, shifted by
-	 * CONFIG_BAR_TOP_OVERLAP: set it to -CONFIG_MAXIMIZED_GAP_BAR and
-	 * restore is pixel-identical to maximize, whatever the values are */
 	struct wlr_box out;
 	wlr_output_layout_get_box(server->output_layout, output, &out);
 	int top_limit = area.y;
-	if (area.y > out.y) {           /* bar at the top */
-		struct wlr_box mbox;
-		maximized_box(server, output, &mbox);
-		top_limit = mbox.y + CONFIG_BAR_TOP_OVERLAP
-			+ CONFIG_MAXIMIZED_GAP_BAR;
-	}
 	if (*x < area.x) {
 		*x = area.x;
 	}
@@ -146,69 +123,18 @@ static void clamp_to_work_area(struct server *server, int *x, int *y,
 	}
 }
 
-/* visible border thickness in whole pixels (config is a float) */
-static int border_thickness(void) {
-	int t = (int)(CONFIG_BORDER_WIDTH + 0.5);
-	return t > 0 ? t : 0;
-}
-
-/* geometry of a maximized window: the window box is inset so that the
- * border ring's outer edge sits CONFIG_MAXIMIZED_GAP (1 px) away from the
- * work area on every side, except the side(s) facing a layer-shell status
- * bar's exclusive zone (bar at the top or bottom of the output), which get
- * CONFIG_MAXIMIZED_GAP_BAR (0 px by default) so the ring sits flush with
- * the bar.  The bar side is detected by comparing the work area with the
- * output box: an edge of the work area that lies inside the output box is
- * adjacent to a bar. */
+/* geometry of a maximized window: the work area exactly (the window fills
+ * the area, flush against any layer-shell bars' exclusive zones) */
 void maximized_box(struct server *server, struct wlr_output *output,
 		struct wlr_box *box) {
-	struct wlr_box area;
-	get_work_area(server, output, &area);
-	struct wlr_box out;
-	wlr_output_layout_get_box(server->output_layout, output, &out);
-
-	/* the visible ring is drawn CONFIG_BORDER_WIDTH px outside the window
-	 * box, so the box itself must be inset by that much plus the requested
-	 * gap for the ring to land at the gap */
-	int extent = border_thickness();
-	int gap = extent + CONFIG_MAXIMIZED_GAP;
-	int gap_bar = extent + CONFIG_MAXIMIZED_GAP_BAR;
-
-	box->x = area.x + gap;
-	box->y = area.y + gap;
-	box->width = area.width - 2 * gap;
-	box->height = area.height - 2 * gap;
-
-	if (area.x > out.x) {           /* bar at the left */
-		box->x = area.x + gap_bar;
-		box->width -= gap_bar - gap;
-	}
-	if (area.y > out.y) {           /* bar at the top */
-		box->y = area.y + gap_bar;
-		box->height -= gap_bar - gap;
-	}
-	if (area.x + area.width < out.x + out.width) { /* bar at the right */
-		box->width -= gap_bar - gap;
-	}
-	if (area.y + area.height < out.y + out.height) { /* bar at the bottom */
-		box->height -= gap_bar - gap;
-	}
+	get_work_area(server, output, box);
 }
 
-/* geometry of a fullscreen window: inset from the raw output box so the
- * border ring's outer edge sits CONFIG_FULLSCREEN_GAP px from the screen
- * edge (CONFIG_MAXIMIZED_GAP is the maximized equivalent; fullscreen
- * deliberately covers layer-shell bars, so this uses the output box, not
- * the work area). */
+/* geometry of a fullscreen window: the whole output box (fullscreen covers
+ * layer-shell bars as well) */
 static void fullscreen_box(struct server *server, struct wlr_output *output,
 		struct wlr_box *box) {
-	struct wlr_box out;
-	wlr_output_layout_get_box(server->output_layout, output, &out);
-	int gap = border_thickness() + CONFIG_FULLSCREEN_GAP;
-	box->x = out.x + gap;
-	box->y = out.y + gap;
-	box->width = out.width - 2 * gap;
-	box->height = out.height - 2 * gap;
+	wlr_output_layout_get_box(server->output_layout, output, box);
 }
 
 /* after a layer-shell exclusive-zone change, existing windows that now sit
@@ -245,7 +171,6 @@ void arrange_toplevels_work_area(struct server *server,
 					mbox.height);
 				wlr_scene_node_set_position(&tl->scene_tree->node, mbox.x,
 					mbox.y);
-				update_toplevel_decoration(tl);
 			}
 			continue;
 		}
@@ -254,7 +179,6 @@ void arrange_toplevels_work_area(struct server *server,
 		clamp_to_work_area(server, &x, &y, box.width, box.height);
 		if (x != box.x || y != box.y) {
 			wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
-			update_toplevel_decoration(tl);
 		}
 	}
 }
@@ -341,7 +265,6 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 		wlr_foreign_toplevel_handle_v1_set_fullscreen(tl->fthandle,
 			fullscreen);
 	}
-	update_toplevel_decoration(tl);
 	/* notify status bars */
 	ipc_send_window_event(server, "window_full", tl);
 }
@@ -431,8 +354,7 @@ void set_maximized(struct server *server, struct toplevel *tl,
 	if (tl->fthandle != NULL) {
 		wlr_foreign_toplevel_handle_v1_set_maximized(tl->fthandle, maximized);
 	}
-	update_toplevel_decoration(tl);
-}
+	}
 
 /* un-maximize back to the previously saved geometry (drag of a maximized
  * window's title bar) */
@@ -458,8 +380,7 @@ void restore_maximized_toplevel(struct toplevel *tl) {
 	if (tl->fthandle != NULL) {
 		wlr_foreign_toplevel_handle_v1_set_maximized(tl->fthandle, false);
 	}
-	update_toplevel_decoration(tl);
-}
+	}
 
 void set_minimized(struct server *server, struct toplevel *tl,
 		bool minimized) {
@@ -495,7 +416,6 @@ void set_minimized(struct server *server, struct toplevel *tl,
 	}
 	/* hiding the window may expose a different surface under the cursor */
 	update_cursor_style(server);
-	update_toplevel_decoration(tl);
 }
 
 /* raise a toplevel's scene node and, above it, every dialog that declared
@@ -547,12 +467,6 @@ void focus_toplevel(struct server *server, struct toplevel *tl) {
 			tl->xdg_toplevel->base->surface, NULL, 0, NULL);
 	}
 	toplevel_raise(server, tl);
-	/* repaint the borders: the new focused window switches to the focused
-	 * color, the previously focused one to the unfocused color */
-	if (prev != NULL) {
-		update_toplevel_decoration(prev);
-	}
-	update_toplevel_decoration(tl);
 	/* tell the input method which surface now owns text input */
 	ime_set_focus(server, tl->xdg_toplevel->base->surface);
 	/* notify status bars that the focus changed */
@@ -624,65 +538,6 @@ static void toplevel_unfocus(struct server *server, struct toplevel *tl) {
 	}
 }
 
-static void toplevel_apply_corner_radius(struct toplevel *tl);
-
-/* ------------------------------------------------------------------ */
-/* subsurfaces: Firefox/Chromium cover the window edges with subsurfaces,
- * so their commits must re-apply the unified window rounded-region mask
- * (the region is the same for the main surface and every subsurface) */
-/* ------------------------------------------------------------------ */
-
-static void toplevel_subsurface_commit(struct wl_listener *listener,
-		void *data) {
-	struct toplevel_subsurface *ts = wl_container_of(listener, ts, commit);
-	(void)data;
-	toplevel_apply_corner_radius(ts->tl);
-}
-
-static void toplevel_subsurface_destroy(struct wl_listener *listener,
-		void *data) {
-	struct toplevel_subsurface *ts = wl_container_of(listener, ts, destroy);
-	(void)data;
-	wl_list_remove(&ts->commit.link);
-	wl_list_remove(&ts->destroy.link);
-	wl_list_remove(&ts->link);
-	free(ts);
-}
-
-static void toplevel_subsurface_add(struct toplevel *tl,
-		struct wlr_subsurface *subsurface) {
-	struct toplevel_subsurface *ts = calloc(1, sizeof(*ts));
-	if (ts == NULL) {
-		return;
-	}
-	ts->tl = tl;
-	ts->subsurface = subsurface;
-	ts->commit.notify = toplevel_subsurface_commit;
-	wl_signal_add(&subsurface->surface->events.commit, &ts->commit);
-	ts->destroy.notify = toplevel_subsurface_destroy;
-	wl_signal_add(&subsurface->events.destroy, &ts->destroy);
-	wl_list_insert(tl->subsurfaces.prev, &ts->link);
-	/* the subsurface may already carry a buffer: round it now */
-	toplevel_apply_corner_radius(tl);
-}
-
-static void xdg_toplevel_new_subsurface(struct wl_listener *listener,
-		void *data) {
-	struct toplevel *tl = wl_container_of(listener, tl, new_subsurface);
-	toplevel_subsurface_add(tl, data);
-}
-
-/* remove all subsurface bookkeeping before the toplevel is freed */
-static void toplevel_destroy_subsurfaces(struct toplevel *tl) {
-	struct toplevel_subsurface *ts, *tmp;
-	wl_list_for_each_safe(ts, tmp, &tl->subsurfaces, link) {
-		wl_list_remove(&ts->commit.link);
-		wl_list_remove(&ts->destroy.link);
-		wl_list_remove(&ts->link);
-		free(ts);
-	}
-}
-
 static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 	struct toplevel *tl = wl_container_of(listener, tl, map);
 	struct server *server = tl->server;
@@ -708,14 +563,12 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 	update_toplevel_output(server, tl);
 	/* a window mapped under a stationary cursor must immediately show the
 	 * right cursor (title zone / resize edge), without waiting for motion */
-	update_toplevel_decoration(tl);
 	update_cursor_style(server);
 }
 
 static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
 	struct toplevel *tl = wl_container_of(listener, tl, unmap);
 	toplevel_unfocus(tl->server, tl);
-	update_toplevel_decoration(tl);
 	update_cursor_style(tl->server);
 }
 
@@ -747,8 +600,6 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	 * their scene trees are children of tl->scene_tree and each popup frees
 	 * itself when its own tree is destroyed (which happens when the popup's
 	 * xdg surface goes away or with tl->scene_tree). */
-	toplevel_destroy_subsurfaces(tl);
-	wl_list_remove(&tl->new_subsurface.link);
 	wl_list_remove(&tl->toplevel_destroy.link);
 	wl_list_remove(&tl->map.link);
 	wl_list_remove(&tl->unmap.link);
@@ -801,9 +652,8 @@ static void xdg_surface_destroy(struct wl_listener *listener, void *data) {
 	if (tl->ipc_added) {
 		ipc_send_window_event(tl->server, "window_removed", tl);
 	}
-	/* the xdg scene tree (and with it the shadow/border nodes) is destroyed
-	 * by wlroots' own xdg-surface scene handler registered by
-	 * wlr_scene_xdg_surface_create */
+	/* the xdg scene tree is destroyed by wlroots' own xdg-surface scene
+	 * handler registered by wlr_scene_xdg_surface_create */
 	free(tl->app_id);
 	free(tl);
 }
@@ -875,9 +725,8 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 			}
 		}
 	}
-	/* geometry (and thus the border/shadow and the resize/title zones
-	 * under the cursor) may have changed */
-	update_toplevel_decoration(tl);
+	/* geometry (and thus the resize/title zones under the cursor) may have
+	 * changed */
 	update_cursor_style(tl->server);
 }
 
@@ -996,435 +845,12 @@ static void popup_unconstrain_handle_destroy(struct wl_listener *listener,
 }
 
 /* ------------------------------------------------------------------ */
-/* popups (scenefx)                                                   */
+/* popups                                                             */
 /* ------------------------------------------------------------------ */
 
 static void xdg_popup_attach(struct toplevel *tl, struct wlr_xdg_popup *popup,
 		struct wlr_scene_tree *parent_tree);
 static void xdg_popup_new_popup(struct wl_listener *listener, void *data);
-static void xdg_popup_decoration(struct toplevel_popup *pp);
-
-/* the ring's inner arc matches the content arc: CONFIG_BORDER_RADIUS minus
- * the border thickness.  Fullscreen uses the same radius as maximized so
- * the corners stay visible; only the border color differs (see
- * toplevel_border_color). */
-static int content_radius(struct toplevel *tl) {
-	(void)tl;
-	int r = CONFIG_BORDER_RADIUS - border_thickness();
-	return r > 0 ? r : 0;
-}
-
-static int popup_content_radius(void) {
-	int r = CONFIG_BORDER_RADIUS - border_thickness();
-	return r > 0 ? r : 0;
-}
-
-/* The window's rounded region: the xdg window-geometry box (layout
- * coordinates) plus the content corner radius.  This single region is the
- * unified clip/mask for the whole window: every surface that belongs to
- * the xdg_toplevel (CSD windows have several - the main surface plus its
- * subsurfaces) is clipped against it.  Each surface node keeps its own
- * buffer and is drawn directly by the scene - nothing is merged into a
- * shared texture - and the region is expressed per node by rounding the
- * surface's own corners that overlap the region's corners.  Because the
- * region is the same for every node, all surfaces are cut along the exact
- * same arc and overlapping surfaces (e.g. a subsurface on top of the main
- * surface at a window corner) line up pixel-perfectly. */
-struct window_rounded_region {
-	struct wlr_box box;   /* window geometry, layout coordinates */
-	int radius;
-};
-
-/* compute the window's rounded region; false when the window has no
- * usable geometry yet */
-static bool window_rounded_region_get(struct toplevel *tl,
-		struct window_rounded_region *region) {
-	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
-	if (tl->scene_tree == NULL || base == NULL) {
-		return false;
-	}
-	region->box.x = tl->scene_tree->node.x;
-	region->box.y = tl->scene_tree->node.y;
-	region->box.width = base->geometry.width;
-	region->box.height = base->geometry.height;
-	region->radius = content_radius(tl);
-	return region->box.width > 0 && region->box.height > 0;
-}
-
-/* the rounded-corner cap at one corner of the region: the radius x radius
- * square whose outer corner the rounding arc cuts */
-static struct wlr_box region_corner_cap(
-		const struct window_rounded_region *region,
-		enum corner_location corner) {
-	struct wlr_box cap = { 0, 0, region->radius, region->radius };
-	switch (corner) {
-	case CORNER_LOCATION_TOP_LEFT:
-		cap.x = region->box.x;
-		cap.y = region->box.y;
-		break;
-	case CORNER_LOCATION_TOP_RIGHT:
-		cap.x = region->box.x + region->box.width - region->radius;
-		cap.y = region->box.y;
-		break;
-	case CORNER_LOCATION_BOTTOM_RIGHT:
-		cap.x = region->box.x + region->box.width - region->radius;
-		cap.y = region->box.y + region->box.height - region->radius;
-		break;
-	case CORNER_LOCATION_BOTTOM_LEFT:
-		cap.x = region->box.x;
-		cap.y = region->box.y + region->box.height - region->radius;
-		break;
-	default:
-		cap.width = 0;
-		cap.height = 0;
-		break;
-	}
-	return cap;
-}
-
-/* does `box` overlap the region's corner cap at `corner`?  A surface that
- * merely grazes the cap (without containing the exact corner pixel) still
- * gets its corner rounded, so no sharp edge survives next to the arc. */
-static bool box_overlaps_corner(const struct window_rounded_region *region,
-		const struct wlr_box *box, enum corner_location corner) {
-	struct wlr_box cap = region_corner_cap(region, corner);
-	if (cap.width <= 0 || cap.height <= 0) {
-		return false;
-	}
-	struct wlr_box inter;
-	return wlr_box_intersection(&inter, box, &cap);
-}
-
-/* round a scene surface's corners; used for both toplevel content and popups */
-struct corner_radius_ctx {
-	struct toplevel *tl;            /* toplevel mode: window-region mask */
-	struct window_rounded_region region; /* the unified clip region */
-	struct wlr_surface *surface;    /* popup mode: round this surface fully */
-	int radius;
-};
-
-/* root surface of a surface's subsurface chain (itself if not a subsurface) */
-static struct wlr_surface *surface_root(struct wlr_surface *surface) {
-	struct wlr_subsurface *sub =
-		wlr_subsurface_try_from_wlr_surface(surface);
-	while (sub != NULL && sub->parent != NULL) {
-		surface = sub->parent;
-		sub = wlr_subsurface_try_from_wlr_surface(surface);
-	}
-	return surface;
-}
-
-static void apply_corner_radius_cb(struct wlr_scene_buffer *buffer,
-		int sx, int sy, void *data) {
-	struct corner_radius_ctx *ctx = data;
-	struct wlr_scene_surface *scene_surface =
-		wlr_scene_surface_try_from_buffer(buffer);
-	if (scene_surface == NULL) {
-		return;
-	}
-	int w = buffer->dst_width > 0 ? buffer->dst_width
-		: (buffer->buffer ? buffer->buffer->width : 0);
-	int h = buffer->dst_height > 0 ? buffer->dst_height
-		: (buffer->buffer ? buffer->buffer->height : 0);
-	if (w <= 0 || h <= 0) {
-		return;
-	}
-
-	if (ctx->tl != NULL) {
-		/* iterate the surfaces under the xdg_toplevel: the main surface
-		 * and every subsurface share the base surface as their root
-		 * (Firefox/Chromium cover the window edges with subsurfaces, so
-		 * the main surface alone never reaches all four corners).  Popups
-		 * and decoration buffers stay unrounded. */
-		struct wlr_xdg_surface *base = ctx->tl->xdg_toplevel->base;
-		if (base == NULL ||
-				surface_root(scene_surface->surface) != base->surface) {
-			return;
-		}
-		/* clip this node against the window's rounded region: round the
-		 * node's own corners that overlap the region's corner caps.  The
-		 * region is the same for every node (that is what makes the mask
-		 * unified), so interior subsurfaces (scrollbars, toolbars) touch
-		 * no cap and stay unclipped. */
-		struct wlr_box buf = { sx, sy, w, h };
-		enum corner_location corners = CORNER_LOCATION_NONE;
-		if (box_overlaps_corner(&ctx->region, &buf,
-				CORNER_LOCATION_TOP_LEFT)) {
-			corners |= CORNER_LOCATION_TOP_LEFT;
-		}
-		if (box_overlaps_corner(&ctx->region, &buf,
-				CORNER_LOCATION_TOP_RIGHT)) {
-			corners |= CORNER_LOCATION_TOP_RIGHT;
-		}
-		if (box_overlaps_corner(&ctx->region, &buf,
-				CORNER_LOCATION_BOTTOM_LEFT)) {
-			corners |= CORNER_LOCATION_BOTTOM_LEFT;
-		}
-		if (box_overlaps_corner(&ctx->region, &buf,
-				CORNER_LOCATION_BOTTOM_RIGHT)) {
-			corners |= CORNER_LOCATION_BOTTOM_RIGHT;
-		}
-		wlr_scene_buffer_set_corner_radius(buffer, ctx->radius, corners);
-	} else if (ctx->surface != NULL &&
-			scene_surface->surface == ctx->surface) {
-		/* popup: round the popup's own surface fully */
-		wlr_scene_buffer_set_corner_radius(buffer, ctx->radius,
-			CORNER_LOCATION_ALL);
-	}
-}
-
-static void toplevel_apply_corner_radius(struct toplevel *tl) {
-	struct window_rounded_region region;
-	if (!window_rounded_region_get(tl, &region)) {
-		return;
-	}
-	struct corner_radius_ctx ctx = {
-		.tl = tl,
-		.region = region,
-		.radius = region.radius,
-	};
-	wlr_scene_node_for_each_buffer(&tl->scene_tree->node,
-		apply_corner_radius_cb, &ctx);
-}
-
-static void popup_apply_corner_radius(struct toplevel_popup *pp) {
-	if (pp->tree == NULL || pp->popup == NULL || pp->popup->base == NULL) {
-		return;
-	}
-	struct corner_radius_ctx ctx = {
-		.surface = pp->popup->base->surface,
-		.radius = popup_content_radius(),
-	};
-	wlr_scene_node_for_each_buffer(&pp->tree->node,
-		apply_corner_radius_cb, &ctx);
-}
-
-/* 0xAARRGGBB -> premultiplied float rgba (scene rects blend premultiplied) */
-static void argb_to_premul(float out[4], uint32_t color) {
-	float a = (float)((color >> 24) & 0xFF) / 255.0f;
-	out[0] = (float)((color >> 16) & 0xFF) / 255.0f * a;
-	out[1] = (float)((color >> 8) & 0xFF) / 255.0f * a;
-	out[2] = (float)((color >> 0) & 0xFF) / 255.0f * a;
-	out[3] = a;
-}
-
-/* 0xAARRGGBB -> straight float rgba (scene shadows blend straight alpha) */
-static void argb_to_straight(float out[4], uint32_t color) {
-	out[0] = (float)((color >> 16) & 0xFF) / 255.0f;
-	out[1] = (float)((color >> 8) & 0xFF) / 255.0f;
-	out[2] = (float)((color >> 0) & 0xFF) / 255.0f;
-	out[3] = (float)((color >> 24) & 0xFF) / 255.0f;
-}
-
-/* the border color for a toplevel: brighter for the focused window, muted
- * for everything else; only fullscreen uses the dedicated color */
-static uint32_t toplevel_border_color(struct toplevel *tl) {
-	if (tl->fullscreen) {
-		return CONFIG_FULLSCREEN_BORDER_COLOR;
-	}
-	if (tl->server->focused == tl) {
-		return CONFIG_BORDER_COLOR;
-	}
-	return CONFIG_BORDER_COLOR_UNFOCUSED;
-}
-
-/* the three top-band segment colors.  Normal windows get the three
- * minimize/maximize/close colors; dialogs and fixed-size windows (whose top
- * band is one close button) get the close color everywhere; fullscreen
- * windows get a single unified strip in the ring color. */
-static void toplevel_segment_colors(struct toplevel *tl, uint32_t out[3]) {
-	bool dialog = toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl);
-	if (tl->fullscreen) {
-		uint32_t ring = toplevel_border_color(tl);
-		out[0] = out[1] = out[2] = ring;
-	} else if (dialog) {
-		out[0] = out[1] = out[2] = CONFIG_BORDER_COLOR_CLOSE;
-	} else {
-		out[0] = CONFIG_BORDER_COLOR_MIN;
-		out[1] = CONFIG_BORDER_COLOR_MAX;
-		out[2] = CONFIG_BORDER_COLOR_CLOSE;
-	}
-}
-
-/* ------------------------------------------------------------------ */
-/* top-band gradient                                                  */
-/* ------------------------------------------------------------------ */
-
-/* the ring's top edge is drawn as a smooth three-color gradient.  scenefx's
- * scene API has no gradient node, so the ramp is sampled per-pixel into a
- * tiny CPU buffer (a data-ptr wlr_buffer) which is stretched over the top
- * band with a wlr_scene_buffer.  The ramp matches the original shader:
- * three equal thirds with smoothstep-blended seams over
- * CONFIG_BORDER_BAND_BLEND px. */
-
-#define BAND_BUF_W 256
-#define BAND_BUF_H 1
-
-/* the band is purely visual: never let it intercept pointer input */
-static bool band_buffer_no_input(struct wlr_scene_buffer *buffer,
-		double *sx, double *sy) {
-	(void)buffer;
-	(void)sx;
-	(void)sy;
-	return false;
-}
-
-/* a CPU-backed wlr_buffer holding the gradient pixels */
-struct band_gradient {
-	struct wlr_buffer base;
-	uint32_t *pixels;
-	int width, height;
-};
-
-static void band_gradient_destroy(struct wlr_buffer *wlr_buffer) {
-	struct band_gradient *bg = wl_container_of(wlr_buffer, bg, base);
-	free(bg->pixels);
-	free(bg);
-}
-
-static bool band_gradient_get_dmabuf(struct wlr_buffer *wlr_buffer,
-		struct wlr_dmabuf_attributes *attribs) {
-	return false;
-}
-
-static bool band_gradient_get_shm(struct wlr_buffer *wlr_buffer,
-		struct wlr_shm_attributes *attribs) {
-	return false;
-}
-
-static bool band_gradient_begin_data_ptr_access(struct wlr_buffer *wlr_buffer,
-		uint32_t flags, void **data, uint32_t *format, size_t *stride) {
-	struct band_gradient *bg = wl_container_of(wlr_buffer, bg, base);
-	*data = bg->pixels;
-	*format = DRM_FORMAT_ARGB8888;
-	*stride = (size_t)bg->width * 4;
-	return true;
-}
-
-static void band_gradient_end_data_ptr_access(struct wlr_buffer *wlr_buffer) {
-}
-
-static const struct wlr_buffer_impl band_gradient_impl = {
-	.destroy = band_gradient_destroy,
-	.get_dmabuf = band_gradient_get_dmabuf,
-	.get_shm = band_gradient_get_shm,
-	.begin_data_ptr_access = band_gradient_begin_data_ptr_access,
-	.end_data_ptr_access = band_gradient_end_data_ptr_access,
-};
-
-/* local smoothstep (avoids libc feature-macro quirks with _POSIX_C_SOURCE) */
-static float smoothstepf(float edge0, float edge1, float x) {
-	float t = fminf(fmaxf((x - edge0) / (edge1 - edge0), 0.0f), 1.0f);
-	return t * t * (3.0f - 2.0f * t);
-}
-
-/* sample the three-thirds ramp at a normalized position t in [0,1] across
- * the band: solid thirds with smoothstep-blended seams, and the band's two
- * ends fade into the ring color so the rounded corners blend in seamlessly */
-static void band_ramp_sample(float t, float blend_frac, float end_fade,
-		const float min[4], const float max[4], const float close[4],
-		const float base[4], float out[4]) {
-	float s1 = smoothstepf(1.0f / 3.0f - blend_frac, 1.0f / 3.0f + blend_frac,
-		t);
-	float s2 = smoothstepf(2.0f / 3.0f - blend_frac, 2.0f / 3.0f + blend_frac,
-		t);
-	float lf = smoothstepf(0.0f, end_fade, t);            /* left corner */
-	float rf = 1.0f - smoothstepf(1.0f - end_fade, 1.0f, t); /* right corner */
-	float ends = lf * rf; /* 0 at both ends (ring color), 1 in the middle */
-	for (int i = 0; i < 4; i++) {
-		float c = min[i] + (max[i] - min[i]) * s1;
-		c = c + (close[i] - c) * s2;
-		out[i] = base[i] + (c - base[i]) * ends;
-	}
-}
-
-/* fill a fresh gradient buffer and publish it on the band scene buffer;
- * the scene locks the buffer, our reference is dropped */
-static bool band_render_gradient(struct toplevel *tl, uint32_t colors[3],
-		uint32_t base_color, int band_w) {
-	struct band_gradient *bg = calloc(1, sizeof(*bg));
-	if (bg == NULL) {
-		return false;
-	}
-	bg->width = BAND_BUF_W;
-	bg->height = BAND_BUF_H;
-	bg->pixels = calloc((size_t)bg->width * bg->height, sizeof(uint32_t));
-	if (bg->pixels == NULL) {
-		free(bg);
-		return false;
-	}
-	wlr_buffer_init(&bg->base, &band_gradient_impl, bg->width, bg->height);
-
-	float min[4], max[4], close[4], base[4];
-	argb_to_premul(min, colors[0]);
-	argb_to_premul(max, colors[1]);
-	argb_to_premul(close, colors[2]);
-	argb_to_premul(base, base_color);
-
-	float blend_frac = (float)CONFIG_BORDER_BAND_BLEND / (float)band_w;
-	float end_fade = (float)CONFIG_BORDER_BAND_BLEND / (float)band_w;
-	for (int x = 0; x < bg->width; x++) {
-		float t = (float)x / (float)(bg->width - 1);
-		float c[4];
-		band_ramp_sample(t, blend_frac, end_fade, min, max, close, base, c);
-		uint32_t a = (uint32_t)lrintf(c[3] * 255.0f);
-		uint32_t r = (uint32_t)lrintf(c[0] * 255.0f);
-		uint32_t g = (uint32_t)lrintf(c[1] * 255.0f);
-		uint32_t b = (uint32_t)lrintf(c[2] * 255.0f);
-		bg->pixels[x] = (a << 24) | (r << 16) | (g << 8) | b;
-	}
-
-	/* the scene locks the buffer; drop our reference */
-	wlr_scene_buffer_set_buffer(tl->band, &bg->base);
-	wlr_buffer_drop(&bg->base);
-	return true;
-}
-
-/* update the popup's rounded ring and content corners */
-static void xdg_popup_decoration(struct toplevel_popup *pp) {
-	struct wlr_xdg_surface *base = pp->popup->base;
-	if (base == NULL) {
-		return;
-	}
-
-	if (pp->border != NULL) {
-		if (CONFIG_POPUP_BORDER_ENABLED && CONFIG_POPUP_BORDER_WIDTH > 0 &&
-				base->surface->mapped && base->surface->buffer != NULL &&
-				base->geometry.width > 0 && base->geometry.height > 0) {
-			int bw = (int)(CONFIG_POPUP_BORDER_WIDTH + 0.5);
-			int radius = popup_content_radius();
-			float premul[4];
-			argb_to_premul(premul, CONFIG_POPUP_BORDER_COLOR);
-			wlr_scene_rect_set_color(pp->border, premul);
-			wlr_scene_rect_set_size(pp->border,
-				base->geometry.width + 2 * bw,
-				base->geometry.height + 2 * bw);
-			wlr_scene_rect_set_corner_radius(pp->border,
-				CONFIG_BORDER_RADIUS, CORNER_LOCATION_ALL);
-			wlr_scene_rect_set_clipped_region(pp->border,
-				(struct clipped_region) {
-					.area = { bw, bw, base->geometry.width,
-						base->geometry.height },
-					.corner_radius = radius,
-					.corners = CORNER_LOCATION_ALL,
-				});
-			wlr_scene_node_set_position(&pp->border->node,
-				-base->geometry.x - bw, -base->geometry.y - bw);
-			wlr_scene_node_set_enabled(&pp->border->node, true);
-			wlr_scene_node_raise_to_top(&pp->border->node);
-		} else {
-			wlr_scene_node_set_enabled(&pp->border->node, false);
-		}
-	}
-
-	popup_apply_corner_radius(pp);
-}
-
-static void xdg_popup_commit(struct wl_listener *listener, void *data) {
-	struct toplevel_popup *pp = wl_container_of(listener, pp, commit);
-	(void)data;
-	xdg_popup_decoration(pp);
-}
 
 /* wayland's wl_list_remove nulls the link (prev/next become NULL), so a
  * second wl_list_remove on the same listener dereferences NULL.  Remove a
@@ -1436,17 +862,13 @@ static void listener_remove_if_attached(struct wl_listener *listener) {
 }
 
 /* the wlr_xdg_popup role object is gone (menu closed / grab dismissed):
- * stop reacting to its commits and hide the border.  The struct itself is
+ * stop reacting to its new popups and destroy signal.  The struct itself is
  * freed by xdg_popup_tree_destroy once the scene tree goes away. */
 static void xdg_popup_destroy(struct wl_listener *listener, void *data) {
 	struct toplevel_popup *pp = wl_container_of(listener, pp, destroy);
 	(void)data;
-	listener_remove_if_attached(&pp->commit);
 	listener_remove_if_attached(&pp->new_popup);
 	listener_remove_if_attached(&pp->destroy);
-	if (pp->border != NULL) {
-		wlr_scene_node_set_enabled(&pp->border->node, false);
-	}
 }
 
 /* the popup's scene tree is destroyed (wlroots destroys it when the popup's
@@ -1454,12 +876,11 @@ static void xdg_popup_destroy(struct wl_listener *listener, void *data) {
  * every listener and the struct.  This is the popup's only owner - it never
  * outlives the tree, so no dangling listeners can be left behind.  The
  * per-signal removals are guarded: xdg_popup_destroy may already have
- * detached commit/new_popup/destroy when the popup role died first. */
+ * detached new_popup/destroy when the popup role died first. */
 static void xdg_popup_tree_destroy(struct wl_listener *listener, void *data) {
 	struct toplevel_popup *pp = wl_container_of(listener, pp, tree_destroy);
 	(void)data;
 	listener_remove_if_attached(&pp->tree_destroy);
-	listener_remove_if_attached(&pp->commit);
 	listener_remove_if_attached(&pp->new_popup);
 	listener_remove_if_attached(&pp->destroy);
 	free(pp);
@@ -1501,20 +922,10 @@ static void xdg_popup_attach(struct toplevel *tl, struct wlr_xdg_popup *popup,
 	 * popup (scene.c) */
 	xdg_surface_tag(pp->tree, TAG_POPUP, popup);
 
-	/* a thin rounded ring behind the popup content, same as the window ring */
-	if (CONFIG_POPUP_BORDER_ENABLED && CONFIG_POPUP_BORDER_WIDTH > 0) {
-		pp->border = wlr_scene_rect_create(pp->tree, 0, 0,
-			(float[4]){ 0.0f, 0.0f, 0.0f, 0.0f });
-		if (pp->border != NULL) {
-			pp->border->accepts_input = false;
-			wlr_scene_node_lower_to_bottom(&pp->border->node);
-		}
-	}
-
 	/* pp lives exactly as long as the tree: when the tree is destroyed
 	 * (popup xdg surface gone, or the toplevel's tree gone) the listener
-	 * below releases everything.  Register it before the commit / popup
-	 * listeners so it is the last one to run on destroy. */
+	 * below releases everything.  Register it before the popup listeners
+	 * so it is the last one to run on destroy. */
 	pp->tree_destroy.notify = xdg_popup_tree_destroy;
 	wl_signal_add(&pp->tree->node.events.destroy, &pp->tree_destroy);
 
@@ -1523,10 +934,6 @@ static void xdg_popup_attach(struct toplevel *tl, struct wlr_xdg_popup *popup,
 	wl_signal_add(&popup->base->events.new_popup, &pp->new_popup);
 	pp->destroy.notify = xdg_popup_destroy;
 	wl_signal_add(&popup->events.destroy, &pp->destroy);
-	pp->commit.notify = xdg_popup_commit;
-	wl_signal_add(&popup->base->surface->events.commit, &pp->commit);
-
-	xdg_popup_decoration(pp);
 }
 
 static void xdg_popup_new_popup(struct wl_listener *listener, void *data) {
@@ -1591,137 +998,6 @@ static void foreign_toplevel_destroy(struct wl_listener *listener, void *data) {
 	tl->fthandle = NULL;
 }
 
-/* ------------------------------------------------------------------ */
-/* scenefx decoration                                                 */
-/* ------------------------------------------------------------------ */
-
-/* (re)build the rounded border ring and shadow around the toplevel and
- * round the content corners.  All geometry is relative to the xdg scene
- * tree, which is anchored at the window box's top-left corner. */
-void update_toplevel_decoration(struct toplevel *tl) {
-	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
-	if (base == NULL) {
-		return;
-	}
-	bool maximized = tl->xdg_toplevel->current.maximized;
-	bool show_border = base->surface->mapped && !tl->minimized &&
-		!(maximized && !CONFIG_MAXIMIZED_BORDER_ENABLED) &&
-		CONFIG_BORDER_WIDTH > 0;
-	/* only the focused window casts a shadow; non-focused windows stay flat
-	 * (focus changes re-render both windows through update_toplevel_decoration) */
-	bool show_shadow = CONFIG_SHADOW_ENABLED && CONFIG_SHADOW_BLUR_SIGMA > 0 &&
-		base->surface->mapped && !tl->minimized && !maximized && !tl->fullscreen &&
-		tl->server->focused == tl;
-
-	struct wlr_box box;
-	toplevel_box(tl, &box);
-	if (box.width <= 0 || box.height <= 0) {
-		show_border = false;
-		show_shadow = false;
-	}
-
-	int bw = border_thickness();
-	int content_r = content_radius(tl);
-
-	/* rounded border ring: a filled rounded rect with a rounded hole
-	 * clipped out where the content sits */
-	if (tl->border != NULL) {
-		if (show_border) {
-			uint32_t color = toplevel_border_color(tl);
-			float premul[4];
-			argb_to_premul(premul, color);
-			if (tl->border_color != color) {
-				wlr_scene_rect_set_color(tl->border, premul);
-				tl->border_color = color;
-			}
-			wlr_scene_rect_set_size(tl->border, box.width + 2 * bw,
-				box.height + 2 * bw);
-			wlr_scene_rect_set_corner_radius(tl->border, CONFIG_BORDER_RADIUS,
-				CORNER_LOCATION_ALL);
-			wlr_scene_rect_set_clipped_region(tl->border,
-				(struct clipped_region) {
-					.area = { bw, bw, box.width, box.height },
-					.corner_radius = content_r,
-					.corners = CORNER_LOCATION_ALL,
-				});
-			wlr_scene_node_set_position(&tl->border->node, -bw, -bw);
-			wlr_scene_node_set_enabled(&tl->border->node, true);
-		} else {
-			wlr_scene_node_set_enabled(&tl->border->node, false);
-		}
-	}
-
-	/* the ring's top edge: a smooth three-color gradient band (minimize /
-	 * maximize-restore / close) spanning the full top band, with its top
-	 * corners rounded to match the ring (the trimmed corners show the ring
-	 * color behind).  The pointer.c title-strip zones use the same thirds. */
-	if (tl->band != NULL) {
-		if (show_border) {
-			int band_w = box.width + 2 * bw;
-			uint32_t seg_colors[3];
-			toplevel_segment_colors(tl, seg_colors);
-			uint32_t base = toplevel_border_color(tl);
-			if (!tl->band_rendered || tl->band_width != band_w ||
-					tl->band_colors[0] != seg_colors[0] ||
-					tl->band_colors[1] != seg_colors[1] ||
-					tl->band_colors[2] != seg_colors[2] ||
-					tl->band_base != base) {
-				if (band_render_gradient(tl, seg_colors, base, band_w)) {
-					tl->band_rendered = true;
-					tl->band_width = band_w;
-					tl->band_colors[0] = seg_colors[0];
-					tl->band_colors[1] = seg_colors[1];
-					tl->band_colors[2] = seg_colors[2];
-					tl->band_base = base;
-				}
-			}
-			wlr_scene_buffer_set_dest_size(tl->band, band_w, bw);
-			wlr_scene_buffer_set_corner_radius(tl->band, CONFIG_BORDER_RADIUS,
-				CORNER_LOCATION_TOP);
-			wlr_scene_node_set_position(&tl->band->node, -bw, -bw);
-			wlr_scene_node_set_enabled(&tl->band->node, true);
-		} else {
-			wlr_scene_node_set_enabled(&tl->band->node, false);
-		}
-	}
-
-	/* soft shadow behind the window (scenefx box shadow) */
-	if (tl->shadow != NULL) {
-		if (show_shadow) {
-			int blur = (int)(CONFIG_SHADOW_BLUR_SIGMA + 0.5);
-			float straight[4];
-			argb_to_straight(straight, CONFIG_SHADOW_COLOR);
-			wlr_scene_shadow_set_color(tl->shadow, straight);
-			wlr_scene_shadow_set_blur_sigma(tl->shadow,
-				CONFIG_SHADOW_BLUR_SIGMA);
-			wlr_scene_shadow_set_corner_radius(tl->shadow,
-				CONFIG_BORDER_RADIUS);
-			int border_w = box.width + 2 * bw;
-			int border_h = box.height + 2 * bw;
-			wlr_scene_shadow_set_size(tl->shadow, border_w + 2 * blur,
-				border_h + 2 * blur);
-			wlr_scene_shadow_set_clipped_region(tl->shadow,
-				(struct clipped_region) {
-					.area = { blur - CONFIG_SHADOW_OFFSET_X,
-						blur - CONFIG_SHADOW_OFFSET_Y,
-						border_w, border_h },
-					.corner_radius = CONFIG_BORDER_RADIUS,
-					.corners = CORNER_LOCATION_ALL,
-				});
-			wlr_scene_node_set_position(&tl->shadow->node,
-				-bw - blur + CONFIG_SHADOW_OFFSET_X,
-				-bw - blur + CONFIG_SHADOW_OFFSET_Y);
-			wlr_scene_node_set_enabled(&tl->shadow->node, true);
-		} else {
-			wlr_scene_node_set_enabled(&tl->shadow->node, false);
-		}
-	}
-
-	/* round the content corners (fullscreen windows are rounded like
-	 * maximized ones) */
-	toplevel_apply_corner_radius(tl);
-}
-
 void server_new_toplevel(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server, new_xdg_toplevel);
 	struct wlr_xdg_toplevel *xdg_toplevel = data;
@@ -1740,7 +1016,7 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 		? xdg_toplevel->app_id : "");
 
 	/* the xdg surface tree handles the surface, subsurfaces and their
-	 * positioning; the border/shadow live as lowered siblings inside it */
+	 * positioning */
 	tl->scene_tree = wlr_scene_xdg_surface_create(
 		server->layers[LAYER_TOPLEVELS], base);
 	if (tl->scene_tree == NULL) {
@@ -1749,34 +1025,6 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 		return;
 	}
 	xdg_surface_tag(tl->scene_tree, TAG_TOPLEVEL, tl);
-	wl_list_init(&tl->subsurfaces);
-
-	/* rounded border ring (purely visual, never intercepts pointer input) */
-	tl->border = wlr_scene_rect_create(tl->scene_tree, 0, 0,
-		(float[4]){ 0.0f, 0.0f, 0.0f, 0.0f });
-	if (tl->border != NULL) {
-		tl->border->accepts_input = false;
-		wlr_scene_node_lower_to_bottom(&tl->border->node);
-	}
-
-	/* the ring's top edge: a smooth three-color gradient band (minimize /
-	 * maximize-restore / close); kept just above the ring and below the
-	 * content */
-	tl->band = wlr_scene_buffer_create(tl->scene_tree, NULL);
-	if (tl->band != NULL) {
-		tl->band->point_accepts_input = band_buffer_no_input;
-		if (tl->border != NULL) {
-			wlr_scene_node_place_above(&tl->band->node, &tl->border->node);
-		}
-	}
-
-	/* soft window shadow */
-	tl->shadow = wlr_scene_shadow_create(tl->scene_tree, 0, 0,
-		CONFIG_BORDER_RADIUS, CONFIG_SHADOW_BLUR_SIGMA,
-		(float[4]){ 0.0f, 0.0f, 0.0f, 0.0f });
-	if (tl->shadow != NULL) {
-		wlr_scene_node_lower_to_bottom(&tl->shadow->node);
-	}
 
 	tl->fthandle = wlr_foreign_toplevel_handle_v1_create(
 		server->foreign_toplevel_manager);
@@ -1830,18 +1078,6 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 	wl_signal_add(&xdg_toplevel->events.set_app_id, &tl->set_app_id);
 	tl->new_popup.notify = xdg_toplevel_new_popup;
 	wl_signal_add(&base->events.new_popup, &tl->new_popup);
-	tl->new_subsurface.notify = xdg_toplevel_new_subsurface;
-	wl_signal_add(&base->surface->events.new_subsurface, &tl->new_subsurface);
-	/* subsurfaces that already exist before this listener was added */
-	struct wlr_subsurface *subsurface;
-	wl_list_for_each(subsurface, &base->surface->current.subsurfaces_below,
-			current.link) {
-		toplevel_subsurface_add(tl, subsurface);
-	}
-	wl_list_for_each(subsurface, &base->surface->current.subsurfaces_above,
-			current.link) {
-		toplevel_subsurface_add(tl, subsurface);
-	}
 
 	/* the toplevel destroy handler (frees the foreign toplevel handle and
 	 * unlinks the listeners above) must run before wlroots asserts that the
