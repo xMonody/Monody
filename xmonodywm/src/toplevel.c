@@ -6,10 +6,14 @@
  * the foreign-toplevel handle that mirrors each window for taskbars.
  *
  * Decorations (rounded corners, border ring, shadow) are provided by
- * scenefx: the content surface's corners are rounded with
- * wlr_scene_buffer_set_corner_radius, the border is a wlr_scene_rect with a
- * rounded hole clipped out of it, and the shadow is a wlr_scene_shadow node
- * lowered below the border.  All parameters come from config.h.
+ * scenefx: the whole window's rounded region (the window-geometry box with
+ * the content corner radius) is computed once and applied as a unified
+ * clip/mask to every surface that belongs to the xdg_toplevel - each
+ * surface node keeps its own buffer and is drawn directly, the region is
+ * expressed per node with wlr_scene_buffer_set_corner_radius.  The border
+ * is a wlr_scene_rect with a rounded hole clipped out of it, and the
+ * shadow is a wlr_scene_shadow node lowered below the border.  All
+ * parameters come from config.h.
  */
 
 #include "server.h"
@@ -494,15 +498,32 @@ void set_minimized(struct server *server, struct toplevel *tl,
 	update_toplevel_decoration(tl);
 }
 
+/* raise a toplevel's scene node and, above it, every dialog that declared
+ * it as its xdg parent (recursively): focusing / clicking the main window
+ * must never bury its open dialogs underneath it.  Dialogs are raised
+ * after their parent, so they always end up stacked above it. */
+static void toplevel_raise(struct server *server, struct toplevel *tl) {
+	if (tl->scene_tree == NULL) {
+		return;
+	}
+	wlr_scene_node_raise_to_top(&tl->scene_tree->node);
+	struct toplevel *child;
+	wl_list_for_each(child, &server->toplevels, link) {
+		if (child != tl && child->xdg_toplevel != NULL &&
+				child->xdg_toplevel->parent == tl->xdg_toplevel) {
+			toplevel_raise(server, child);
+		}
+	}
+}
+
 void focus_toplevel(struct server *server, struct toplevel *tl) {
 	if (tl->minimized || tl->xdg_toplevel->base == NULL ||
 			!tl->xdg_toplevel->base->surface->mapped) {
 		return;
 	}
 	struct toplevel *prev = server->focused;
-	struct wlr_scene_node *raise = &tl->scene_tree->node;
 	if (prev == tl) {
-		wlr_scene_node_raise_to_top(raise);
+		toplevel_raise(server, tl);
 		return;
 	}
 	if (prev != NULL && prev->xdg_toplevel->base != NULL) {
@@ -525,7 +546,7 @@ void focus_toplevel(struct server *server, struct toplevel *tl) {
 		wlr_seat_keyboard_notify_enter(server->seat,
 			tl->xdg_toplevel->base->surface, NULL, 0, NULL);
 	}
-	wlr_scene_node_raise_to_top(raise);
+	toplevel_raise(server, tl);
 	/* repaint the borders: the new focused window switches to the focused
 	 * color, the previously focused one to the unfocused color */
 	if (prev != NULL) {
@@ -607,8 +628,8 @@ static void toplevel_apply_corner_radius(struct toplevel *tl);
 
 /* ------------------------------------------------------------------ */
 /* subsurfaces: Firefox/Chromium cover the window edges with subsurfaces,
- * so their commits must re-apply the rounded-corner mask (only the corners
- * of each subsurface that coincide with the window's outer corners) */
+ * so their commits must re-apply the unified window rounded-region mask
+ * (the region is the same for the main surface and every subsurface) */
 /* ------------------------------------------------------------------ */
 
 static void toplevel_subsurface_commit(struct wl_listener *listener,
@@ -983,10 +1004,102 @@ static void xdg_popup_attach(struct toplevel *tl, struct wlr_xdg_popup *popup,
 static void xdg_popup_new_popup(struct wl_listener *listener, void *data);
 static void xdg_popup_decoration(struct toplevel_popup *pp);
 
+/* the ring's inner arc matches the content arc: CONFIG_BORDER_RADIUS minus
+ * the border thickness.  Fullscreen uses the same radius as maximized so
+ * the corners stay visible; only the border color differs (see
+ * toplevel_border_color). */
+static int content_radius(struct toplevel *tl) {
+	(void)tl;
+	int r = CONFIG_BORDER_RADIUS - border_thickness();
+	return r > 0 ? r : 0;
+}
+
+static int popup_content_radius(void) {
+	int r = CONFIG_BORDER_RADIUS - border_thickness();
+	return r > 0 ? r : 0;
+}
+
+/* The window's rounded region: the xdg window-geometry box (layout
+ * coordinates) plus the content corner radius.  This single region is the
+ * unified clip/mask for the whole window: every surface that belongs to
+ * the xdg_toplevel (CSD windows have several - the main surface plus its
+ * subsurfaces) is clipped against it.  Each surface node keeps its own
+ * buffer and is drawn directly by the scene - nothing is merged into a
+ * shared texture - and the region is expressed per node by rounding the
+ * surface's own corners that overlap the region's corners.  Because the
+ * region is the same for every node, all surfaces are cut along the exact
+ * same arc and overlapping surfaces (e.g. a subsurface on top of the main
+ * surface at a window corner) line up pixel-perfectly. */
+struct window_rounded_region {
+	struct wlr_box box;   /* window geometry, layout coordinates */
+	int radius;
+};
+
+/* compute the window's rounded region; false when the window has no
+ * usable geometry yet */
+static bool window_rounded_region_get(struct toplevel *tl,
+		struct window_rounded_region *region) {
+	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
+	if (tl->scene_tree == NULL || base == NULL) {
+		return false;
+	}
+	region->box.x = tl->scene_tree->node.x;
+	region->box.y = tl->scene_tree->node.y;
+	region->box.width = base->geometry.width;
+	region->box.height = base->geometry.height;
+	region->radius = content_radius(tl);
+	return region->box.width > 0 && region->box.height > 0;
+}
+
+/* the rounded-corner cap at one corner of the region: the radius x radius
+ * square whose outer corner the rounding arc cuts */
+static struct wlr_box region_corner_cap(
+		const struct window_rounded_region *region,
+		enum corner_location corner) {
+	struct wlr_box cap = { 0, 0, region->radius, region->radius };
+	switch (corner) {
+	case CORNER_LOCATION_TOP_LEFT:
+		cap.x = region->box.x;
+		cap.y = region->box.y;
+		break;
+	case CORNER_LOCATION_TOP_RIGHT:
+		cap.x = region->box.x + region->box.width - region->radius;
+		cap.y = region->box.y;
+		break;
+	case CORNER_LOCATION_BOTTOM_RIGHT:
+		cap.x = region->box.x + region->box.width - region->radius;
+		cap.y = region->box.y + region->box.height - region->radius;
+		break;
+	case CORNER_LOCATION_BOTTOM_LEFT:
+		cap.x = region->box.x;
+		cap.y = region->box.y + region->box.height - region->radius;
+		break;
+	default:
+		cap.width = 0;
+		cap.height = 0;
+		break;
+	}
+	return cap;
+}
+
+/* does `box` overlap the region's corner cap at `corner`?  A surface that
+ * merely grazes the cap (without containing the exact corner pixel) still
+ * gets its corner rounded, so no sharp edge survives next to the arc. */
+static bool box_overlaps_corner(const struct window_rounded_region *region,
+		const struct wlr_box *box, enum corner_location corner) {
+	struct wlr_box cap = region_corner_cap(region, corner);
+	if (cap.width <= 0 || cap.height <= 0) {
+		return false;
+	}
+	struct wlr_box inter;
+	return wlr_box_intersection(&inter, box, &cap);
+}
+
 /* round a scene surface's corners; used for both toplevel content and popups */
 struct corner_radius_ctx {
-	struct toplevel *tl;          /* toplevel mode: round edge-corner buffers */
-	struct wlr_surface *surface;  /* popup mode: round this surface fully */
+	struct toplevel *tl;            /* toplevel mode: window-region mask */
+	struct window_rounded_region region; /* the unified clip region */
+	struct wlr_surface *surface;    /* popup mode: round this surface fully */
 	int radius;
 };
 
@@ -999,11 +1112,6 @@ static struct wlr_surface *surface_root(struct wlr_surface *surface) {
 		sub = wlr_subsurface_try_from_wlr_surface(surface);
 	}
 	return surface;
-}
-
-static bool rect_contains(const struct wlr_box *b, int x, int y) {
-	return x >= b->x && x <= b->x + b->width &&
-		y >= b->y && y <= b->y + b->height;
 }
 
 static void apply_corner_radius_cb(struct wlr_scene_buffer *buffer,
@@ -1023,39 +1131,37 @@ static void apply_corner_radius_cb(struct wlr_scene_buffer *buffer,
 	}
 
 	if (ctx->tl != NULL) {
-		/* round every buffer that belongs to the window (the main surface
-		 * AND its subsurfaces - Firefox/Chromium cover the window edges
-		 * with subsurfaces, so the main surface alone never reaches all
-		 * four corners).  Each buffer is rounded only at the corners that
-		 * coincide with the window's outer corners, so interior
-		 * subsurfaces (scrollbars, toolbars) are not clipped. */
+		/* iterate the surfaces under the xdg_toplevel: the main surface
+		 * and every subsurface share the base surface as their root
+		 * (Firefox/Chromium cover the window edges with subsurfaces, so
+		 * the main surface alone never reaches all four corners).  Popups
+		 * and decoration buffers stay unrounded. */
 		struct wlr_xdg_surface *base = ctx->tl->xdg_toplevel->base;
 		if (base == NULL ||
 				surface_root(scene_surface->surface) != base->surface) {
-			return; /* popups / unrelated surfaces stay unrounded */
+			return;
 		}
-		/* the window geometry box in layout coordinates: wlr_scene_node_
-		 * for_each_buffer hands us buffer positions relative to the scene
-		 * root, and the xdg scene tree's own node sits at the geometry's
-		 * top-left */
-		struct wlr_box win = {
-			.x = ctx->tl->scene_tree->node.x,
-			.y = ctx->tl->scene_tree->node.y,
-			.width = base->geometry.width,
-			.height = base->geometry.height,
-		};
+		/* clip this node against the window's rounded region: round the
+		 * node's own corners that overlap the region's corner caps.  The
+		 * region is the same for every node (that is what makes the mask
+		 * unified), so interior subsurfaces (scrollbars, toolbars) touch
+		 * no cap and stay unclipped. */
 		struct wlr_box buf = { sx, sy, w, h };
 		enum corner_location corners = CORNER_LOCATION_NONE;
-		if (rect_contains(&buf, win.x, win.y)) {
+		if (box_overlaps_corner(&ctx->region, &buf,
+				CORNER_LOCATION_TOP_LEFT)) {
 			corners |= CORNER_LOCATION_TOP_LEFT;
 		}
-		if (rect_contains(&buf, win.x + win.width, win.y)) {
+		if (box_overlaps_corner(&ctx->region, &buf,
+				CORNER_LOCATION_TOP_RIGHT)) {
 			corners |= CORNER_LOCATION_TOP_RIGHT;
 		}
-		if (rect_contains(&buf, win.x, win.y + win.height)) {
+		if (box_overlaps_corner(&ctx->region, &buf,
+				CORNER_LOCATION_BOTTOM_LEFT)) {
 			corners |= CORNER_LOCATION_BOTTOM_LEFT;
 		}
-		if (rect_contains(&buf, win.x + win.width, win.y + win.height)) {
+		if (box_overlaps_corner(&ctx->region, &buf,
+				CORNER_LOCATION_BOTTOM_RIGHT)) {
 			corners |= CORNER_LOCATION_BOTTOM_RIGHT;
 		}
 		wlr_scene_buffer_set_corner_radius(buffer, ctx->radius, corners);
@@ -1067,28 +1173,15 @@ static void apply_corner_radius_cb(struct wlr_scene_buffer *buffer,
 	}
 }
 
-/* the ring's inner arc matches the content arc: CONFIG_BORDER_RADIUS minus
- * the border thickness.  Fullscreen uses the same radius as maximized so
- * the corners stay visible; only the border color differs (see
- * toplevel_border_color). */
-static int content_radius(struct toplevel *tl) {
-	(void)tl;
-	int r = CONFIG_BORDER_RADIUS - border_thickness();
-	return r > 0 ? r : 0;
-}
-
-static int popup_content_radius(void) {
-	int r = CONFIG_BORDER_RADIUS - border_thickness();
-	return r > 0 ? r : 0;
-}
-
 static void toplevel_apply_corner_radius(struct toplevel *tl) {
-	if (tl->scene_tree == NULL || tl->xdg_toplevel->base == NULL) {
+	struct window_rounded_region region;
+	if (!window_rounded_region_get(tl, &region)) {
 		return;
 	}
 	struct corner_radius_ctx ctx = {
 		.tl = tl,
-		.radius = content_radius(tl),
+		.region = region,
+		.radius = region.radius,
 	};
 	wlr_scene_node_for_each_buffer(&tl->scene_tree->node,
 		apply_corner_radius_cb, &ctx);

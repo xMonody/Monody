@@ -8,8 +8,12 @@ A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 * The compositor draws a **rounded border** (`#676E95`, `CONFIG_BORDER_WIDTH`
   px stroke, `CONFIG_BORDER_RADIUS` px corner radius) around undecorated
   windows and a **soft shadow** behind floating windows.  Both are provided
-  by **scenefx**: the content surface's corners are rounded with
-  `wlr_scene_buffer_set_corner_radius`, the border is a
+  by **scenefx**: the whole window's rounded region (the window-geometry
+  box with the content corner radius) is computed once and applied as a
+  unified clip/mask to every surface that belongs to the window (CSD
+  windows have several — the main surface plus its subsurfaces); each
+  surface node keeps its own buffer and is drawn directly, expressed per
+  node with `wlr_scene_buffer_set_corner_radius`.  The border is a
   `wlr_scene_rect` with a rounded hole clipped out of it, and the shadow is
   a `wlr_scene_shadow` node lowered below the border.  All parameters
   (`CONFIG_BORDER_*`, `CONFIG_SHADOW_*`) live in `config.h`; client-side
@@ -391,7 +395,6 @@ compositor; CMake builds them from the client headers generated out of
   per-output) + a virtual pointer: verifies a dragged window can never
   slide underneath a status bar, and that its top never goes closer than
   `CONFIG_EDGE_THICKNESS` px to the screen top on a bar-less edge.
-
 * `test-ime-relay.c` — drives the input method relay end to end: a fake
   app (text-input-v3) plus a fake input method (input-method-v2) verify
   that focus activates the IM, that the IM receives the keymap and key

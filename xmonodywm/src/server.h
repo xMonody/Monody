@@ -120,8 +120,9 @@ struct text_input {
 };
 
 /* a subsurface of a toplevel's surface (Firefox/Chromium cover the window
- * edges with subsurfaces); its commit re-applies the rounded-corner mask so
- * the subsurface corners that reach the window's outer corners are rounded */
+ * edges with subsurfaces); its commit re-applies the unified window
+ * rounded-region mask so the subsurface stays clipped to the same rounded
+ * region as the main surface */
 struct toplevel_subsurface {
 	struct toplevel *tl;
 	struct wlr_subsurface *subsurface;
@@ -160,8 +161,8 @@ struct toplevel {
 	struct wlr_scene_rect *border;
 	struct wlr_scene_shadow *shadow;
 	uint32_t border_color;            /* color the border was last set to */
-	/* subsurfaces of the window surface (their commits re-apply the corner
-	 * radius); cleaned up together with the toplevel */
+	/* subsurfaces of the window surface (their commits re-apply the unified
+	 * window rounded-region mask); cleaned up together with the toplevel */
 	struct wl_list subsurfaces;      /* struct toplevel_subsurface.link */
 	/* popups are scene-tree children of scene_tree and clean themselves up
 	 * when their tree is destroyed, so no explicit popup list is needed */

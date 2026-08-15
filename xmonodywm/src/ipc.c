@@ -259,8 +259,7 @@ void ipc_send_window_event(struct server *server, const char *event,
 
 /* send the current mapped windows; target NULL broadcasts to everyone */
 static void ipc_send_window_list(struct server *server,
-		struct ipc_client *target) {
-	cJSON *root = cJSON_CreateObject();
+		struct ipc_client *target) {	cJSON *root = cJSON_CreateObject();
 	if (root == NULL) {
 		return;
 	}
