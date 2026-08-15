@@ -145,6 +145,15 @@ struct toplevel_subsurface {
 	struct wl_listener commit;
 	struct wl_listener new_subsurface; /* nested subsurfaces */
 	struct wl_listener destroy;
+
+	/* buffer damage accumulated since the last FBO render, in
+	 * surface-local coordinates (rounded.c maps it into FBO space at
+	 * render time, when the final layout position is known) */
+	pixman_region32_t damage;
+	/* geometry at the last commit (position relative to the parent
+	 * surface + surface-local size), so moves/resizes can damage the
+	 * old area too */
+	int prev_x, prev_y, prev_w, prev_h;
 };
 
 struct toplevel {
@@ -461,8 +470,27 @@ struct rounded_cache *rounded_cache_create(struct server *server,
 	struct toplevel *tl);
 void rounded_cache_destroy(struct rounded_cache *rc);
 void rounded_cache_dirty(struct toplevel *tl);
+void rounded_cache_dirty_content(struct toplevel *tl);
+void rounded_cache_dirty_mask(struct toplevel *tl);
+void rounded_cache_content_commit(struct toplevel *tl);
+void rounded_cache_subsurface_commit(struct toplevel *tl,
+	struct toplevel_subsurface *ts);
 void rounded_cache_hide_content(struct toplevel *tl);
 void rounded_render_all(struct server *server);
+
+/* ---- border.c: window border width and focus-dependent color ---- */
+float border_width(struct toplevel *tl);
+float border_gradient_width(struct toplevel *tl);
+struct wlr_render_color border_color(struct server *server,
+	struct toplevel *tl);
+void border_top_colors(struct toplevel *tl,
+	struct wlr_render_color *left, struct wlr_render_color *mid,
+	struct wlr_render_color *right);
+void border_focus_changed(struct toplevel *tl, struct toplevel *prev);
+
+/* ---- shadow.c: window shadow width/opacity policy ---- */
+float shadow_width(struct toplevel *tl);
+float shadow_alpha(void);
 
 /* ---- place.c: initial window placement ----
  * size fully client-driven, position centered on the output (screen) */

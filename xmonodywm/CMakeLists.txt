@@ -116,6 +116,8 @@ set(COMPOSITOR_SOURCES
 	src/ime.c
 	src/toplevel.c
 	src/rounded.c
+	src/border.c
+	src/shadow.c
 	src/place.c
 	src/layer.c
 	src/output.c
@@ -196,6 +198,12 @@ add_executable(test-mask-guard test-mask-guard.c)
 target_include_directories(test-mask-guard PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-mask-guard PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
 
+# subsurface restack test: place_below/place_above carry no damage and are
+# applied on the parent commit; the FBO cache must detect the order change
+add_executable(test-restack test-restack.c)
+target_include_directories(test-restack PRIVATE ${PROTOCOL_GEN_DIR})
+target_link_libraries(test-restack PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT)
+
 # border test: two toplevels + focus switches
 add_executable(test-bar-clamp test-bar-clamp.c)
 target_include_directories(test-bar-clamp PRIVATE ${PROTOCOL_GEN_DIR})
@@ -233,6 +241,8 @@ add_dependencies(test-cursor protocols)
 add_dependencies(test-cursor-shape protocols)
 add_dependencies(test-select-drag protocols)
 add_dependencies(test-bar-clamp protocols)
+add_dependencies(test-mask-guard protocols)
+add_dependencies(test-restack protocols)
 add_dependencies(test-border protocols)
 add_dependencies(test-quit protocols)
 add_dependencies(test-ime-relay protocols)

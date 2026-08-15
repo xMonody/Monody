@@ -8,7 +8,7 @@
 #   3. re-attach buffer A + damage          -> mask renders (damage)
 #   4. attach buffer B (240x120)            -> mask renders (new buffer)
 #
-# The compositor logs every render as "mask:  surface=..." (WLR_DEBUG);
+# The compositor logs every render as "rounded: published FBO for app_id..." (WLR_DEBUG);
 # exactly 3 renders must appear.  A 4th line means the state-only commit
 # re-rendered; fewer means a damaged/new-buffer commit was skipped.
 #
@@ -39,11 +39,11 @@ if [ "$RC" -ne 0 ]; then
     exit 1
 fi
 
-RENDERS=$(grep -c "mask:  surface=" "$RUNDIR/wm.log")
+RENDERS=$(grep -c "rounded: published FBO for app_id" "$RUNDIR/wm.log")
 echo "mask renders: $RENDERS (expected 3)"
 if [ "$RENDERS" -ne 3 ]; then
     echo "FAIL: expected exactly 3 mask renders (state-only commit must be skipped)"
-    grep "mask:  surface=" "$RUNDIR/wm.log"
+    grep "rounded: published FBO for app_id" "$RUNDIR/wm.log"
     exit 1
 fi
 

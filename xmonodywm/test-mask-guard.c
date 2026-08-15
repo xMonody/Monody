@@ -1,13 +1,16 @@
-/* mask-guard test: verify the mask re-render only runs when the commit
+/* mask-guard test: verify the FBO re-render only runs when the commit
  * actually changed the content.
  *
  * Scenario (virtual pointer parked away from the window; the compositor
- * logs every mask render with WLR_DEBUG "mask: <app> surface=..."):
- *   1. attach buffer A (200x100) + damage   -> mask renders (content)
- *   2. commit with NO attach and NO damage  -> mask must NOT re-render
- *   3. attach buffer A again + damage       -> mask re-renders (damage)
- *   4. attach buffer B (different size)     -> mask re-renders (new buffer)
- * The shell script counts the mask render lines: exactly 3.
+ * logs every publish with WLR_DEBUG "rounded: published FBO ..."):
+ *   1. attach buffer A (200x100) + damage   -> re-renders (content)
+ *   2. commit with NO attach and NO damage  -> MUST NOT re-render
+ *   3. attach buffer A again + damage       -> re-renders (in-place update)
+ *   4. attach buffer B (different size)     -> re-renders (new buffer)
+ * The shell script counts the publish lines: exactly 3.  The sleeps after
+ * each dirty step keep every commit in its own frame, because the
+ * damage-driven renderer legitimately batches commits that land in the
+ * same frame window into one re-render.
  */
 #define _GNU_SOURCE
 #include <stdbool.h>
@@ -120,11 +123,13 @@ int main(void) {
 	wl_surface_commit(surface);
 	roundtrip();
 	roundtrip();
+	usleep(50000);
 
 	printf("step 2: state-only commit (no attach, no damage)\n");
 	wl_surface_commit(surface);
 	roundtrip();
 	roundtrip();
+	usleep(50000);
 
 	printf("step 3: re-attach buffer A + damage\n");
 	wl_surface_attach(surface, buf_a, 0, 0);
@@ -132,6 +137,7 @@ int main(void) {
 	wl_surface_commit(surface);
 	roundtrip();
 	roundtrip();
+	usleep(50000);
 
 	printf("step 4: attach buffer B (new size)\n");
 	wl_surface_attach(surface, buf_b, 0, 0);

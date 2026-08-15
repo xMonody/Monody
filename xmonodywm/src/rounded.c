@@ -19,6 +19,24 @@
  * dirty (client commit, subsurface commit, geometry change).  While the
  * content is unchanged the cached buffer is reused without any redraw.
  *
+ * Two refinements keep the re-render cost proportional to what actually
+ * changed:
+ *
+ *   - Damage-driven partial re-renders: every surface commit (main surface
+ *     and subsurfaces) collects its buffer damage into per-surface regions.
+ *     At render time the accumulated damage is mapped into FBO coordinates
+ *     and both passes are scissored to it, so a small commit (a typed
+ *     character, a blinking cursor) only re-composites and re-masks the
+ *     pixels that changed, and only that region is republished to the
+ *     scene.  Damage touching the border ring is expanded so ring pixels
+ *     that blend the changed content are re-rendered too.
+ *
+ *   - Mask-only re-renders: border/shadow parameters (focus transitions)
+ *     can change without any content change.  The content pass is then
+ *     skipped entirely and only the SDF mask pass is re-run over the cached
+ *     content.  To make this possible the FBO always reserves the maximum
+ *     shadow padding, so a focus change never resizes the buffers.
+ *
  * The offscreen FBO is sized to the xdg window geometry, so client-drawn
  * decorations outside the geometry (CSD shadow margins) are clipped away;
  * undecorated windows (geometry == surface) are unaffected.
@@ -31,6 +49,7 @@
 
 #include <drm_fourcc.h>
 #include <math.h>
+#include <pixman.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -63,22 +82,71 @@ static const char *rounded_vert_src =
 	"  gl_Position = vec4(a_pos.x * 2.0 - 1.0, a_pos.y * 2.0 - 1.0, 0.0, 1.0);\n"
 	"}\n";
 
-/* Rounded-rectangle SDF mask over the sampled content texture. */
+/* Rounded-rectangle SDF mask over the sampled content texture, plus an
+ * optional border ring drawn just inside the rounded edge.  The top band of
+ * the ring is split into three thirds (left / middle / right), each with its
+ * own color, matching the title-strip gesture zones; the rest of the ring
+ * uses the focus-dependent base color.
+ *
+ * An outward shadow ring is drawn outside the rounded rect (only when
+ * u_shadow_width > 0, i.e. for the focused window): it takes the border
+ * color at each edge and fades from u_shadow_alpha at the edge to fully
+ * transparent at u_shadow_width px out. */
 static const char *rounded_frag_src =
 	"precision mediump float;\n"
 	"varying vec2 v_uv;\n"
 	"uniform sampler2D u_tex;\n"
 	"uniform vec2 u_size;\n"
+	"uniform vec2 u_window_origin;\n"
+	"uniform vec2 u_window_size;\n"
 	"uniform float u_radius;\n"
+	"uniform float u_border_width;\n"
+	"uniform vec4 u_border_color;\n"
+	"uniform vec4 u_border_top_left;\n"
+	"uniform vec4 u_border_top_mid;\n"
+	"uniform vec4 u_border_top_right;\n"
+	"uniform float u_border_gradient;\n"
+	"uniform float u_shadow_width;\n"
+	"uniform float u_shadow_alpha;\n"
 	"void main() {\n"
-	"  vec2 p = v_uv * u_size;\n"
-	"  vec2 b = u_size * 0.5;\n"
+	"  vec2 p = v_uv * u_size - u_window_origin;\n"
+	"  vec2 b = u_window_size * 0.5;\n"
 	"  vec2 q = abs(p - b) - (b - vec2(u_radius));\n"
 	"  float sd = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - u_radius;\n"
-	"  float alpha = 1.0 - smoothstep(-1.0, 1.0, sd);\n"
+	"  float aa = 1.0;\n"
+	"  float outer = 1.0 - smoothstep(-aa, aa, sd);\n"
+	"  float inner = 1.0 - smoothstep(-aa, aa, sd + u_border_width);\n"
+	"  float border = outer - inner;\n"
+	"  float third = u_window_size.x / 3.0;\n"
+	"  /* horizontal: blend across the two junctions instead of hard cuts */\n"
+	"  float t1 = smoothstep(third - u_border_gradient, third + u_border_gradient, p.x);\n"
+	"  float t2 = smoothstep(2.0 * third - u_border_gradient, 2.0 * third + u_border_gradient, p.x);\n"
+	"  vec4 top_color = mix(u_border_top_left, u_border_top_mid, t1);\n"
+	"  top_color = mix(top_color, u_border_top_right, t2);\n"
+	"  /* vertical fade: the top accent colors bleed down the left/right\n"
+	"     edges over u_border_gradient px, then fall back to base color */\n"
+	"  float vfade = 1.0 - smoothstep(u_border_width, u_border_width + u_border_gradient, p.y);\n"
+	"  vec4 bcolor = mix(u_border_color, top_color, vfade);\n"
 	"  vec4 c = texture2D(u_tex, v_uv);\n"
-	"  gl_FragColor = vec4(c.rgb * alpha, c.a * alpha);\n"
+	"  /* window (content + border), premultiplied */\n"
+	"  vec3 win_rgb = c.rgb * inner + bcolor.rgb * bcolor.a * border;\n"
+	"  float win_a = c.a * inner + bcolor.a * border;\n"
+	"  /* outward shadow ring just outside the rounded rect */\n"
+	"  float shadow_a = 0.0;\n"
+	"  if (u_shadow_width > 0.0) {\n"
+	"    float shadow_out = smoothstep(-aa, 0.0, sd);\n"
+	"    float shadow_fade = 1.0 - smoothstep(0.0, u_shadow_width, sd);\n"
+	"    shadow_a = u_shadow_alpha * shadow_out * shadow_fade;\n"
+	"  }\n"
+	"  /* composite: window over its shadow (both premultiplied) */\n"
+	"  vec3 rgb = win_rgb + bcolor.rgb * shadow_a * (1.0 - win_a);\n"
+	"  float a = win_a + shadow_a * (1.0 - win_a);\n"
+	"  gl_FragColor = vec4(rgb, a);\n"
 	"}\n";
+
+/* partial re-renders are only worth it while the damage region stays
+ * simple; a heavily fragmented region falls back to a full re-render */
+#define ROUNDED_MAX_DAMAGE_RECTS 64
 
 struct rounded_cache {
 	struct server *server;
@@ -93,12 +161,35 @@ struct rounded_cache {
 	int content_tex_width, content_tex_height;
 
 	int fbo_width, fbo_height;       /* current FBO size in physical pixels */
-	int logical_width, logical_height; /* current size in layout pixels */
+	int window_pw, window_ph;        /* window size in physical pixels */
+	int shadow_px;                   /* shadow padding in physical pixels */
+	int logical_width, logical_height; /* window size in layout pixels */
+	float shadow_logical;            /* shadow width in layout pixels */
 	float scale;                     /* output scale the FBO was rendered at */
 
-	bool dirty;
+	bool content_dirty;              /* client content changed: both passes run */
+	bool mask_dirty;                 /* only border/shadow params changed: mask pass only */
 	bool gl_ready;                   /* shader program compiled + linked */
 	bool failed;                     /* permanently disabled (no gles2/GL) */
+
+	/* accumulated damage since the last FBO render.  content_damage is the
+	 * main surface's damage in surface-local coordinates (fed by
+	 * rounded_cache_content_commit); fbo_damage is the per-render scratch
+	 * region in FBO physical coordinates */
+	pixman_region32_t content_damage;
+	pixman_region32_t fbo_damage;
+	/* main-surface geometry at the last publish, so commits that resize the
+	 * surface, change its scale/transform or its viewport source without
+	 * attaching buffer damage still trigger a full re-render */
+	int surf_w, surf_h;
+	int surf_scale;
+	enum wl_output_transform surf_transform;
+	bool vp_has_src;
+	struct wlr_fbox vp_src;
+	/* snapshot of the main surface's direct subsurface stacking order
+	 * (struct wlr_subsurface *), used to detect place_above/place_below
+	 * restacks that attach no buffer damage */
+	struct wl_array subsurface_order;
 
 	GLuint program;
 	GLuint vbo;
@@ -106,7 +197,21 @@ struct rounded_cache {
 	GLint u_tex;
 	GLint u_size;
 	GLint u_radius;
+	GLint u_border_width;
+	GLint u_border_color;
+	GLint u_border_top_left;
+	GLint u_border_top_mid;
+	GLint u_border_top_right;
+	GLint u_border_gradient;
+	GLint u_window_origin;
+	GLint u_window_size;
+	GLint u_shadow_width;
+	GLint u_shadow_alpha;
 };
+
+/* forward decls: used by the commit collectors below, defined near
+ * rounded_note_surface_state() */
+static bool rounded_subsurface_order_changed(struct rounded_cache *rc);
 
 /* --- small GL helpers -------------------------------------------------- */
 
@@ -197,6 +302,16 @@ static bool rounded_gl_init(struct rounded_cache *rc) {
 	rc->u_tex = glGetUniformLocation(rc->program, "u_tex");
 	rc->u_size = glGetUniformLocation(rc->program, "u_size");
 	rc->u_radius = glGetUniformLocation(rc->program, "u_radius");
+	rc->u_border_width = glGetUniformLocation(rc->program, "u_border_width");
+	rc->u_border_color = glGetUniformLocation(rc->program, "u_border_color");
+	rc->u_border_top_left = glGetUniformLocation(rc->program, "u_border_top_left");
+	rc->u_border_top_mid = glGetUniformLocation(rc->program, "u_border_top_mid");
+	rc->u_border_top_right = glGetUniformLocation(rc->program, "u_border_top_right");
+	rc->u_border_gradient = glGetUniformLocation(rc->program, "u_border_gradient");
+	rc->u_window_origin = glGetUniformLocation(rc->program, "u_window_origin");
+	rc->u_window_size = glGetUniformLocation(rc->program, "u_window_size");
+	rc->u_shadow_width = glGetUniformLocation(rc->program, "u_shadow_width");
+	rc->u_shadow_alpha = glGetUniformLocation(rc->program, "u_shadow_alpha");
 
 	static const float quad[] = {
 		0.0f, 0.0f, /* top-left */
@@ -261,9 +376,13 @@ static void rounded_release_buffers(struct rounded_cache *rc) {
 }
 
 static bool rounded_alloc_buffers(struct rounded_cache *rc,
-		int logical_width, int logical_height, float scale) {
-	int fw = (int)ceilf((float)logical_width * scale);
-	int fh = (int)ceilf((float)logical_height * scale);
+		int logical_width, int logical_height, float scale,
+		float shadow_logical) {
+	int window_pw = (int)ceilf((float)logical_width * scale);
+	int window_ph = (int)ceilf((float)logical_height * scale);
+	int shadow_px = (int)ceilf(shadow_logical * scale);
+	int fw = window_pw + 2 * shadow_px;
+	int fh = window_ph + 2 * shadow_px;
 	if (fw <= 0 || fh <= 0) {
 		return false;
 	}
@@ -273,7 +392,11 @@ static bool rounded_alloc_buffers(struct rounded_cache *rc,
 			rc->fbo_width == fw && rc->fbo_height == fh) {
 		rc->logical_width = logical_width;
 		rc->logical_height = logical_height;
+		rc->shadow_logical = shadow_logical;
 		rc->scale = scale;
+		rc->window_pw = window_pw;
+		rc->window_ph = window_ph;
+		rc->shadow_px = shadow_px;
 		return true;
 	}
 
@@ -298,7 +421,11 @@ static bool rounded_alloc_buffers(struct rounded_cache *rc,
 	rc->fbo_height = fh;
 	rc->logical_width = logical_width;
 	rc->logical_height = logical_height;
+	rc->shadow_logical = shadow_logical;
 	rc->scale = scale;
+	rc->window_pw = window_pw;
+	rc->window_ph = window_ph;
+	rc->shadow_px = shadow_px;
 	return true;
 }
 
@@ -314,10 +441,29 @@ struct content_pass_ctx {
 	struct wlr_render_pass *pass;
 	struct wlr_surface *root_surface;
 	float scale;
+	const pixman_region32_t *clip; /* NULL = render the whole FBO */
 	bool rendered_main;
 	bool main_texture_failed;
 	struct wl_array textures; /* struct content_texture */
 };
+
+/* destination box of a scene buffer inside the offscreen FBO (physical
+ * pixels); shared by the content pass and the damage collection walk */
+static void rounded_buffer_dst_box(struct rounded_cache *rc,
+		struct wlr_scene_buffer *buffer, int sx, int sy,
+		struct wlr_box *dst_box) {
+	/* wlr_scene_node_for_each_buffer() reports layout (absolute) coordinates;
+	 * the FBO is anchored at the scene tree's origin, so make the position
+	 * tree-relative before scaling */
+	int rel_x = sx - rc->tl->scene_tree->node.x;
+	int rel_y = sy - rc->tl->scene_tree->node.y;
+	*dst_box = (struct wlr_box){
+		.x = rc->shadow_px + (int)lroundf((float)rel_x * rc->scale),
+		.y = rc->shadow_px + (int)lroundf((float)rel_y * rc->scale),
+		.width = (int)lroundf((float)buffer->dst_width * rc->scale),
+		.height = (int)lroundf((float)buffer->dst_height * rc->scale),
+	};
+}
 
 /* root surface of a surface's subsurface chain (itself if not a subsurface) */
 static struct wlr_surface *rounded_surface_root(struct wlr_surface *surface) {
@@ -405,17 +551,8 @@ static void rounded_content_pass_cb(struct wlr_scene_buffer *buffer,
 	 * non-rotated offscreen FBO */
 	enum wl_output_transform transform =
 		wlr_output_transform_invert(buffer->transform);
-	/* wlr_scene_node_for_each_buffer() reports layout (absolute) coordinates;
-	 * the FBO is anchored at the scene tree's origin, so make the position
-	 * tree-relative before scaling */
-	int rel_x = sx - ctx->rc->tl->scene_tree->node.x;
-	int rel_y = sy - ctx->rc->tl->scene_tree->node.y;
-	struct wlr_box dst_box = {
-		.x = (int)lroundf((float)rel_x * ctx->scale),
-		.y = (int)lroundf((float)rel_y * ctx->scale),
-		.width = (int)lroundf((float)buffer->dst_width * ctx->scale),
-		.height = (int)lroundf((float)buffer->dst_height * ctx->scale),
-	};
+	struct wlr_box dst_box;
+	rounded_buffer_dst_box(ctx->rc, buffer, sx, sy, &dst_box);
 	wlr_render_pass_add_texture(ctx->pass, &(struct wlr_render_texture_options){
 		.texture = texture,
 		.src_box = buffer->src_box,
@@ -423,6 +560,7 @@ static void rounded_content_pass_cb(struct wlr_scene_buffer *buffer,
 		.transform = transform,
 		.filter_mode = buffer->filter_mode,
 		.alpha = &alpha,
+		.clip = ctx->clip,
 		.wait_timeline = wait_timeline,
 		.wait_point = wait_point,
 	});
@@ -432,7 +570,8 @@ static void rounded_content_pass_cb(struct wlr_scene_buffer *buffer,
 	}
 }
 
-static bool rounded_render_content(struct rounded_cache *rc) {
+static bool rounded_render_content(struct rounded_cache *rc,
+		const pixman_region32_t *clip) {
 	struct wlr_xdg_surface *base = rc->tl->xdg_toplevel->base;
 	if (base == NULL || base->surface == NULL) {
 		return false;
@@ -447,12 +586,15 @@ static bool rounded_render_content(struct rounded_cache *rc) {
 
 	/* clear the cache buffer to transparent black first, so areas not
 	 * covered by the content surface stay transparent instead of showing
-	 * uninitialized DMA-BUF memory */
+	 * uninitialized DMA-BUF memory.  On a partial re-render only the
+	 * damaged region is cleared: untouched pixels keep their (still
+	 * correct) previous content. */
 	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
 		.box = { .x = 0, .y = 0,
 			.width = rc->fbo_width, .height = rc->fbo_height },
 		.color = { .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 0.0f },
 		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
+		.clip = clip,
 	});
 
 	struct content_pass_ctx ctx = {
@@ -460,6 +602,7 @@ static bool rounded_render_content(struct rounded_cache *rc) {
 		.pass = pass,
 		.root_surface = base->surface,
 		.scale = rc->scale,
+		.clip = clip,
 	};
 	wl_array_init(&ctx.textures);
 
@@ -498,7 +641,16 @@ static bool rounded_render_content(struct rounded_cache *rc) {
 
 /* --- rounded mask pass (raw GLES2) ------------------------------------- */
 
-static bool rounded_render_mask(struct rounded_cache *rc) {
+/* Draw the SDF mask over the content into the output FBO.  With region NULL
+ * the whole FBO is refreshed: a full copy of the content FBO into the
+ * content texture (which also repairs any staleness left by earlier partial
+ * passes) followed by one fullscreen quad.  With a region, only its rects
+ * are copied and drawn under glScissor, so a partial re-render costs only
+ * its damage area.  glCopyTexSubImage2D honours the scissor test and the
+ * shader never samples outside it, so stale texels outside the scissor are
+ * never read. */
+static bool rounded_render_mask(struct rounded_cache *rc,
+		const pixman_region32_t *region) {
 	struct wlr_renderer *renderer = rc->server->renderer;
 	if (!wlr_renderer_is_gles2(renderer)) {
 		return false;
@@ -535,21 +687,19 @@ static bool rounded_render_mask(struct rounded_cache *rc) {
 		rc->content_tex_height = rc->fbo_height;
 	}
 
-	/* copy the freshly composited content FBO into the texture (a pure
-	 * GPU-side copy, no glReadPixels) */
-	glBindFramebuffer(GL_FRAMEBUFFER, content_fbo);
-	glBindTexture(GL_TEXTURE_2D, rc->content_tex);
-	glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0,
-		rc->fbo_width, rc->fbo_height);
-	glBindTexture(GL_TEXTURE_2D, 0);
+	int n_rects = 0;
+	const pixman_box32_t *boxes = NULL;
+	bool partial = region != NULL && !pixman_region32_empty(region);
+	if (partial) {
+		boxes = pixman_region32_rectangles(region, &n_rects);
+	}
 
 	/* rounded-rectangle mask pass into the output FBO */
 	glBindFramebuffer(GL_FRAMEBUFFER, out_fbo);
 	glViewport(0, 0, rc->fbo_width, rc->fbo_height);
-	glDisable(GL_SCISSOR_TEST);
 	glDisable(GL_DEPTH_TEST);
 	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-	glDisable(GL_BLEND); /* the mask pass overwrites the whole buffer */
+	glDisable(GL_BLEND); /* the mask pass overwrites the drawn region */
 
 	glUseProgram(rc->program);
 
@@ -557,12 +707,62 @@ static bool rounded_render_mask(struct rounded_cache *rc) {
 	glBindTexture(GL_TEXTURE_2D, rc->content_tex);
 	glUniform1i(rc->u_tex, 0);
 	glUniform2f(rc->u_size, (float)rc->fbo_width, (float)rc->fbo_height);
+	glUniform2f(rc->u_window_origin, (float)rc->shadow_px,
+		(float)rc->shadow_px);
+	glUniform2f(rc->u_window_size, (float)rc->window_pw,
+		(float)rc->window_ph);
+	/* the padding is constant (always the maximum shadow width); the actual
+	 * shadow ring follows focus through this uniform */
+	glUniform1f(rc->u_shadow_width, shadow_width(rc->tl) * rc->scale);
+	glUniform1f(rc->u_shadow_alpha, shadow_alpha());
 	glUniform1f(rc->u_radius, (float)CONFIG_ROUNDED_RADIUS * rc->scale);
+	glUniform1f(rc->u_border_width, border_width(rc->tl) * rc->scale);
+	struct wlr_render_color border = border_color(rc->server, rc->tl);
+	glUniform4f(rc->u_border_color, border.r, border.g, border.b, border.a);
+	struct wlr_render_color top_left, top_mid, top_right;
+	border_top_colors(rc->tl, &top_left, &top_mid, &top_right);
+	glUniform4f(rc->u_border_top_left, top_left.r, top_left.g, top_left.b,
+		top_left.a);
+	glUniform4f(rc->u_border_top_mid, top_mid.r, top_mid.g, top_mid.b,
+		top_mid.a);
+	glUniform4f(rc->u_border_top_right, top_right.r, top_right.g,
+		top_right.b, top_right.a);
+	glUniform1f(rc->u_border_gradient,
+		border_gradient_width(rc->tl) * rc->scale);
 
 	glBindBuffer(GL_ARRAY_BUFFER, rc->vbo);
 	glEnableVertexAttribArray(rc->a_pos);
 	glVertexAttribPointer(rc->a_pos, 2, GL_FLOAT, GL_FALSE, 0, NULL);
-	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+	if (partial) {
+		/* per-rect: copy the freshly composited content into the texture
+		 * (a pure GPU-side copy, no glReadPixels), then draw the quad under
+		 * the same scissor.  Both copy and draw coordinates are buffer
+		 * coordinates: the shader's y mapping is the identity between
+		 * buffer rows and GL window rows. */
+		glEnable(GL_SCISSOR_TEST);
+		for (int i = 0; i < n_rects; i++) {
+			const pixman_box32_t *b = &boxes[i];
+			int x = b->x1, y = b->y1;
+			int w = b->x2 - b->x1, h = b->y2 - b->y1;
+			glScissor(x, y, w, h);
+			glBindFramebuffer(GL_FRAMEBUFFER, content_fbo);
+			/* both the texture offset and the framebuffer source use the
+			 * rect's coordinates: the texture mirrors the FBO row for row */
+			glCopyTexSubImage2D(GL_TEXTURE_2D, 0, x, y, x, y, w, h);
+			glBindFramebuffer(GL_FRAMEBUFFER, out_fbo);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glDisable(GL_SCISSOR_TEST);
+	} else {
+		glDisable(GL_SCISSOR_TEST);
+		glBindFramebuffer(GL_FRAMEBUFFER, content_fbo);
+		glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0,
+			rc->fbo_width, rc->fbo_height);
+		glBindFramebuffer(GL_FRAMEBUFFER, out_fbo);
+		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	}
+
 	glDisableVertexAttribArray(rc->a_pos);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glBindTexture(GL_TEXTURE_2D, 0);
@@ -647,7 +847,11 @@ struct rounded_cache *rounded_cache_create(struct server *server,
 	}
 	rc->server = server;
 	rc->tl = tl;
-	rc->dirty = true;
+	rc->content_dirty = true;
+	rc->mask_dirty = true;
+	pixman_region32_init(&rc->content_damage);
+	pixman_region32_init(&rc->fbo_damage);
+	wl_array_init(&rc->subsurface_order);
 
 	if (!wlr_renderer_is_gles2(server->renderer)) {
 		wlr_log(WLR_INFO, "rounded: renderer is not gles2, disabling rounded corners");
@@ -678,13 +882,154 @@ void rounded_cache_destroy(struct rounded_cache *rc) {
 		rounded_end_gl(&saved);
 	}
 	rounded_release_buffers(rc);
+	pixman_region32_fini(&rc->content_damage);
+	pixman_region32_fini(&rc->fbo_damage);
+	wl_array_release(&rc->subsurface_order);
 	free(rc);
 }
 
 void rounded_cache_dirty(struct toplevel *tl) {
 	if (tl->rounded != NULL) {
-		tl->rounded->dirty = true;
+		tl->rounded->content_dirty = true;
+		tl->rounded->mask_dirty = true;
 	}
+}
+
+/* content-only invalidation: surface commits that attached damage */
+void rounded_cache_dirty_content(struct toplevel *tl) {
+	if (tl->rounded != NULL) {
+		tl->rounded->content_dirty = true;
+	}
+}
+
+/* mask-only invalidation: border/shadow parameters changed (focus) while
+ * the content is untouched; the cached content pass is reused.  A focus
+ * change damages nothing in the scene by itself (content commits do, via
+ * the scene surface's own damage), so explicitly schedule a frame on the
+ * toplevel's output - the publish after the re-render then damages the
+ * affected outputs for the repaint. */
+void rounded_cache_dirty_mask(struct toplevel *tl) {
+	if (tl->rounded == NULL) {
+		return;
+	}
+	tl->rounded->mask_dirty = true;
+	struct wlr_output *output = toplevel_output(tl->server, tl);
+	if (output != NULL) {
+		wlr_output_schedule_frame(output);
+	}
+}
+
+/* main-surface commit: collect the commit's damage for a partial re-render.
+ * Resizes and scale/transform/viewport-source changes carry no buffer
+ * damage of their own, so they fall back to full-surface damage. */
+void rounded_cache_content_commit(struct toplevel *tl) {
+	struct rounded_cache *rc = tl->rounded;
+	if (rc == NULL || rc->failed) {
+		return;
+	}
+	struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
+	if (base == NULL || base->surface == NULL) {
+		return;
+	}
+	struct wlr_surface *surface = base->surface;
+
+	/* wlroots re-applies opacity 1.0 to the committed surface; re-hide it
+	 * (only if a valid rounded FBO is already published) */
+	rounded_cache_hide_content(tl);
+
+	pixman_region32_t dmg;
+	pixman_region32_init(&dmg);
+	wlr_surface_get_effective_damage(surface, &dmg);
+
+	struct wlr_surface_state *state = &surface->current;
+	if (state->width != rc->surf_w || state->height != rc->surf_h ||
+			state->scale != rc->surf_scale ||
+			state->transform != rc->surf_transform ||
+			state->viewport.has_src != rc->vp_has_src ||
+			(state->viewport.has_src &&
+			 (state->viewport.src.x != rc->vp_src.x ||
+			  state->viewport.src.y != rc->vp_src.y ||
+			  state->viewport.src.width != rc->vp_src.width ||
+			  state->viewport.src.height != rc->vp_src.height)) ||
+			rounded_subsurface_order_changed(rc)) {
+		/* geometry changed without buffer damage: cover the new surface
+		 * area and the vacated old one (a shrink must clear the pixels
+		 * beyond the new size) */
+		pixman_region32_union_rect(&dmg, &dmg, 0, 0, state->width,
+			state->height);
+		pixman_region32_union_rect(&dmg, &dmg, 0, 0, rc->surf_w,
+			rc->surf_h);
+	}
+
+	if (!pixman_region32_empty(&dmg)) {
+		pixman_region32_union(&rc->content_damage, &rc->content_damage,
+			&dmg);
+		rounded_cache_dirty_content(tl);
+	}
+	pixman_region32_fini(&dmg);
+}
+
+/* subsurface commit: collect damage (surface-local coordinates) plus the
+ * old-position area when the subsurface moved or resized, so both the new
+ * and the vacated region are re-rendered.  A subsurface that unmapped
+ * (attach NULL) falls back to a full re-render: it is rare and its old
+ * content spans an area the commit does not damage. */
+void rounded_cache_subsurface_commit(struct toplevel *tl,
+		struct toplevel_subsurface *ts) {
+	struct rounded_cache *rc = tl->rounded;
+	if (rc == NULL || rc->failed) {
+		return;
+	}
+	struct wlr_subsurface *sub = ts->subsurface;
+	struct wlr_surface *surface = sub->surface;
+
+	rounded_cache_hide_content(tl);
+
+	int cur_x = sub->current.x;
+	int cur_y = sub->current.y;
+	int cur_w = surface->current.width;
+	int cur_h = surface->current.height;
+
+	if (surface->current.buffer == NULL) {
+		/* unmapped: everything it used to cover must be re-rendered; the
+		 * geometry tracking restarts at zero for a future remap */
+		ts->prev_x = cur_x;
+		ts->prev_y = cur_y;
+		ts->prev_w = 0;
+		ts->prev_h = 0;
+		rounded_cache_dirty(tl);
+		return;
+	}
+
+	pixman_region32_t dmg;
+	pixman_region32_init(&dmg);
+	/* A commit can also reorder subsurfaces (place_above/below) without
+	 * attaching any buffer damage, so always cover the surface's own area:
+	 * re-compositing it re-applies the new stacking order. */
+	pixman_region32_union_rect(&dmg, &dmg, 0, 0, cur_w, cur_h);
+
+	if (cur_x != ts->prev_x || cur_y != ts->prev_y ||
+			cur_w != ts->prev_w || cur_h != ts->prev_h) {
+		/* vacated old area, in the surface's own coordinates (shifted by
+		 * the move): it must be cleared and re-composited */
+		pixman_region32_union_rect(&dmg, &dmg,
+			ts->prev_x - cur_x, ts->prev_y - cur_y,
+			ts->prev_w, ts->prev_h);
+		ts->prev_x = cur_x;
+		ts->prev_y = cur_y;
+		ts->prev_w = cur_w;
+		ts->prev_h = cur_h;
+	}
+
+	pixman_region32_t eff;
+	pixman_region32_init(&eff);
+	wlr_surface_get_effective_damage(surface, &eff);
+	pixman_region32_union(&dmg, &dmg, &eff);
+	pixman_region32_fini(&eff);
+
+	pixman_region32_union(&ts->damage, &ts->damage, &dmg);
+	rounded_cache_dirty_content(tl);
+	pixman_region32_fini(&dmg);
 }
 
 /* Keep showing the last published rounded FBO when a re-render fails
@@ -698,6 +1043,232 @@ static void rounded_fallback(struct rounded_cache *rc) {
 		/* re-hide in case a surface commit reset the opacity to 1.0 */
 		rounded_cache_hide_content(rc->tl);
 	}
+}
+
+/* --- damage collection and publishing ---------------------------------- */
+
+/* map a surface-local damage region into FBO coordinates through the
+ * buffer's destination box */
+static void rounded_map_damage(pixman_region32_t *dst,
+		const pixman_region32_t *src, const struct wlr_box *dst_box,
+		int dst_width, int dst_height) {
+	if (pixman_region32_empty(src) || dst_width <= 0 || dst_height <= 0 ||
+			dst_box->width <= 0 || dst_box->height <= 0) {
+		return;
+	}
+	float xs = (float)dst_box->width / (float)dst_width;
+	float ys = (float)dst_box->height / (float)dst_height;
+	int n = 0;
+	const pixman_box32_t *boxes = pixman_region32_rectangles(src, &n);
+	for (int i = 0; i < n; i++) {
+		const pixman_box32_t *b = &boxes[i];
+		int x1 = dst_box->x + (int)floorf(b->x1 * xs);
+		int y1 = dst_box->y + (int)floorf(b->y1 * ys);
+		int x2 = dst_box->x + (int)ceilf(b->x2 * xs);
+		int y2 = dst_box->y + (int)ceilf(b->y2 * ys);
+		pixman_region32_union_rect(dst, dst, x1, y1, x2 - x1, y2 - y1);
+	}
+}
+
+/* find the subsurface bookkeeping entry for a surface in the toplevel's
+ * subsurface tree */
+static struct toplevel_subsurface *rounded_find_subsurface(struct toplevel *tl,
+		struct wlr_surface *surface) {
+	struct toplevel_subsurface *ts;
+	wl_list_for_each(ts, &tl->subsurfaces, link) {
+		if (ts->subsurface->surface == surface) {
+			return ts;
+		}
+	}
+	return NULL;
+}
+
+struct damage_collect_ctx {
+	struct rounded_cache *rc;
+	struct wlr_surface *root_surface;
+};
+
+static void rounded_collect_damage_cb(struct wlr_scene_buffer *buffer,
+		int sx, int sy, void *data) {
+	struct damage_collect_ctx *ctx = data;
+	struct rounded_cache *rc = ctx->rc;
+
+	/* same filtering as the content pass: only the toplevel's own surface
+	 * tree (surface + subsurfaces) with a buffer attached */
+	struct wlr_scene_surface *scene_surface =
+		wlr_scene_surface_try_from_buffer(buffer);
+	if (scene_surface == NULL ||
+			rounded_surface_root(scene_surface->surface) != ctx->root_surface ||
+			buffer->buffer == NULL) {
+		return;
+	}
+
+	const pixman_region32_t *src = NULL;
+	if (scene_surface->surface == ctx->root_surface) {
+		src = &rc->content_damage;
+	} else {
+		struct toplevel_subsurface *ts =
+			rounded_find_subsurface(rc->tl, scene_surface->surface);
+		if (ts != NULL) {
+			src = &ts->damage;
+		}
+	}
+	if (src == NULL || pixman_region32_empty(src)) {
+		return;
+	}
+
+	struct wlr_box dst_box;
+	rounded_buffer_dst_box(rc, buffer, sx, sy, &dst_box);
+	rounded_map_damage(&rc->fbo_damage, src, &dst_box,
+		buffer->dst_width, buffer->dst_height);
+}
+
+/* walk the content tree once to gather the accumulated surface damage into
+ * rc->fbo_damage (FBO physical coordinates).  Runs before the content pass,
+ * which needs the complete region up front for its clip. */
+static void rounded_collect_damage(struct rounded_cache *rc) {
+	struct wlr_xdg_surface *base = rc->tl->xdg_toplevel->base;
+	if (base == NULL || base->surface == NULL) {
+		return;
+	}
+	struct damage_collect_ctx ctx = {
+		.rc = rc,
+		.root_surface = base->surface,
+	};
+	pixman_region32_clear(&rc->fbo_damage);
+	wlr_scene_node_for_each_buffer(&rc->tl->scene_tree->node,
+		rounded_collect_damage_cb, &ctx);
+}
+
+/* the per-surface damage caches are consumed once a render reflects their
+ * content (full or partial).  A commit arriving mid-render adds fresh
+ * damage and re-dirties, so the next frame picks it up. */
+static void rounded_clear_damage_caches(struct rounded_cache *rc) {
+	pixman_region32_clear(&rc->content_damage);
+	struct toplevel_subsurface *ts;
+	wl_list_for_each(ts, &rc->tl->subsurfaces, link) {
+		pixman_region32_clear(&ts->damage);
+	}
+}
+
+/* expand each damage rect by the border ring width (plus one AA pixel) so
+ * border pixels that blend the changed content beneath them are re-masked
+ * and republished too; the shadow ring never samples content, so it needs
+ * no expansion.  The result is clipped to the FBO. */
+static void rounded_expand_ring(struct rounded_cache *rc) {
+	if (pixman_region32_empty(&rc->fbo_damage)) {
+		return; /* empty means "full" upstream */
+	}
+	int expand = (int)ceilf(border_width(rc->tl) * rc->scale) + 1;
+	int n = 0;
+	const pixman_box32_t *boxes =
+		pixman_region32_rectangles(&rc->fbo_damage, &n);
+	pixman_region32_t expanded;
+	pixman_region32_init(&expanded);
+	for (int i = 0; i < n; i++) {
+		const pixman_box32_t *b = &boxes[i];
+		pixman_region32_union_rect(&expanded, &expanded,
+			b->x1 - expand, b->y1 - expand,
+			(b->x2 - b->x1) + 2 * expand, (b->y2 - b->y1) + 2 * expand);
+	}
+	pixman_region32_intersect_rect(&expanded, &expanded, 0, 0,
+		rc->fbo_width, rc->fbo_height);
+	pixman_region32_copy(&rc->fbo_damage, &expanded);
+	pixman_region32_fini(&expanded);
+}
+
+/* publish the freshly rendered rounded buffer to the scene node and keep
+ * its position/dest size in sync with the window + shadow padding.
+ * damage == NULL means the whole buffer changed. */
+static void rounded_publish(struct rounded_cache *rc,
+		const struct wlr_box *box, const pixman_region32_t *damage) {
+	wlr_scene_buffer_set_buffer_with_damage(rc->node, rc->rounded_buf,
+		damage);
+	int shadow_i = (int)lroundf(rc->shadow_logical);
+	wlr_scene_node_set_position(&rc->node->node, -shadow_i, -shadow_i);
+	wlr_scene_buffer_set_dest_size(rc->node,
+		box->width + 2 * shadow_i, box->height + 2 * shadow_i);
+}
+
+/* snapshot the main surface's direct subsurface stacking order so a later
+ * commit can detect place_above/place_below restacks (which carry no buffer
+ * damage).  The order is captured at publish time - the state the cached FBO
+ * actually reflects - and compared at commit time. */
+static void rounded_capture_subsurface_order(struct rounded_cache *rc) {
+	struct wlr_xdg_surface *base = rc->tl->xdg_toplevel->base;
+	/* keep the backing allocation; only reset the used length */
+	rc->subsurface_order.size = 0;
+	if (base == NULL || base->surface == NULL) {
+		return;
+	}
+	struct wlr_surface *surface = base->surface;
+	struct wlr_subsurface *sub;
+	wl_list_for_each(sub, &surface->current.subsurfaces_below, current.link) {
+		struct wlr_subsurface **slot =
+			wl_array_add(&rc->subsurface_order, sizeof(*slot));
+		if (slot == NULL) {
+			rc->subsurface_order.size = 0;
+			return;
+		}
+		*slot = sub;
+	}
+	wl_list_for_each(sub, &surface->current.subsurfaces_above, current.link) {
+		struct wlr_subsurface **slot =
+			wl_array_add(&rc->subsurface_order, sizeof(*slot));
+		if (slot == NULL) {
+			rc->subsurface_order.size = 0;
+			return;
+		}
+		*slot = sub;
+	}
+}
+
+/* true if the main surface's direct subsurface stacking order differs from
+ * the last published snapshot (below list first, then above) */
+static bool rounded_subsurface_order_changed(struct rounded_cache *rc) {
+	struct wlr_xdg_surface *base = rc->tl->xdg_toplevel->base;
+	if (base == NULL || base->surface == NULL) {
+		return false;
+	}
+	struct wlr_surface *surface = base->surface;
+
+	struct wlr_subsurface **snapshot = rc->subsurface_order.data;
+	size_t snapshot_len =
+		rc->subsurface_order.size / sizeof(*snapshot);
+	size_t index = 0;
+
+	struct wlr_subsurface *sub;
+	wl_list_for_each(sub, &surface->current.subsurfaces_below, current.link) {
+		if (index >= snapshot_len || snapshot[index] != sub) {
+			return true;
+		}
+		index++;
+	}
+	wl_list_for_each(sub, &surface->current.subsurfaces_above, current.link) {
+		if (index >= snapshot_len || snapshot[index] != sub) {
+			return true;
+		}
+		index++;
+	}
+	return index != snapshot_len;
+}
+
+/* remember the main-surface geometry the published FBO reflects; commits
+ * that resize the surface or change its viewport source compare against
+ * this to detect changes that carry no buffer damage */
+static void rounded_note_surface_state(struct rounded_cache *rc) {
+	struct wlr_xdg_surface *base = rc->tl->xdg_toplevel->base;
+	if (base == NULL || base->surface == NULL) {
+		return;
+	}
+	struct wlr_surface_state *state = &base->surface->current;
+	rc->surf_w = state->width;
+	rc->surf_h = state->height;
+	rc->surf_scale = state->scale;
+	rc->surf_transform = state->transform;
+	rc->vp_has_src = state->viewport.has_src;
+	rc->vp_src = state->viewport.src;
+	rounded_capture_subsurface_order(rc);
 }
 
 /* Render any dirty rounded caches.  Called from the output frame handler
@@ -730,15 +1301,44 @@ void rounded_render_all(struct server *server) {
 		if (scale <= 0.0f) {
 			scale = 1.0f;
 		}
+		/* the FBO always reserves the maximum shadow padding, so focus
+		 * transitions never resize it and stay mask-only re-renders */
+		float shadow_w = (float)CONFIG_SHADOW_WIDTH;
 
-		if (!rc->dirty && rc->logical_width == box.width &&
-				rc->logical_height == box.height && rc->scale == scale) {
+		if (!rc->content_dirty && !rc->mask_dirty &&
+				rc->logical_width == box.width &&
+				rc->logical_height == box.height && rc->scale == scale &&
+				rc->shadow_logical == shadow_w) {
 			/* cache is fresh: wlroots' scene_surface re-applies opacity
 			 * 1.0 on every surface commit (surface_reconfigure), so re-hide
 			 * the content right before the scene renders.  A valid FBO is
 			 * already published, so this never leaves the window
 			 * transparent. */
 			rounded_cache_hide_content(tl);
+			continue;
+		}
+
+		/* mask-only re-render: border/shadow parameters changed (focus),
+		 * content and buffers are untouched.  Requires a fully initialized
+		 * GL program and an FBO published at the current size, so the
+		 * cached content texture is complete. */
+		if (rc->mask_dirty && !rc->content_dirty && rc->gl_ready &&
+				rc->content_buf != NULL &&
+				rc->node->buffer == rc->rounded_buf &&
+				rc->logical_width == box.width &&
+				rc->logical_height == box.height && rc->scale == scale) {
+			rc->mask_dirty = false;
+			if (!rounded_render_mask(rc, NULL)) {
+				rc->mask_dirty = true;
+				continue;
+			}
+			/* the whole border ring and shadow changed color */
+			rounded_publish(rc, &box, NULL);
+			rounded_note_surface_state(rc);
+			rounded_cache_hide_content(tl);
+			wlr_log(WLR_DEBUG, "rounded: published mask-only FBO for app_id "
+				"\"%s\" (%dx%d logical)",
+				tl->app_id != NULL ? tl->app_id : "?", box.width, box.height);
 			continue;
 		}
 
@@ -763,16 +1363,38 @@ void rounded_render_all(struct server *server) {
 		 * while we are rendering (between our scene sampling and the
 		 * publish below), the commit handler sets dirty=true again and the
 		 * next frame re-renders - the update is never silently dropped. */
-		rc->dirty = false;
+		rc->content_dirty = false;
+		rc->mask_dirty = false;
 
-		if (!rounded_alloc_buffers(rc, box.width, box.height, scale)) {
+		if (!rounded_alloc_buffers(rc, box.width, box.height, scale,
+				shadow_w)) {
 			wlr_log(WLR_ERROR, "rounded: failed to allocate FBO buffers");
-			rc->dirty = true;
+			rc->content_dirty = true;
+			rc->mask_dirty = true;
 			rounded_fallback(rc);
 			continue;
 		}
 
-		if (!rounded_render_content(rc)) {
+		/* gather the accumulated surface damage into FBO coordinates, then
+		 * consume the caches: whatever the caches held is reflected in this
+		 * render (full or partial) */
+		rounded_collect_damage(rc);
+		rounded_clear_damage_caches(rc);
+
+		/* partial re-render only over the damaged area.  Requires an FBO
+		 * published at the current size (a fresh pair after a resize has
+		 * uninitialized content and must be rendered in full) and a bounded
+		 * rect count. */
+		bool partial = rc->node->buffer == rc->rounded_buf &&
+			!pixman_region32_empty(&rc->fbo_damage) &&
+			pixman_region32_n_rects(&rc->fbo_damage) <=
+				ROUNDED_MAX_DAMAGE_RECTS;
+		if (!partial) {
+			pixman_region32_clear(&rc->fbo_damage); /* empty = full */
+		}
+
+		if (!rounded_render_content(rc,
+				partial ? &rc->fbo_damage : NULL)) {
 			/* the client content could not be composited into the FBO (for
 			 * example a DMA-BUF/texture that isn't ready yet); keep the
 			 * previous rounded FBO and retry on the next frame */
@@ -780,22 +1402,25 @@ void rounded_render_all(struct server *server) {
 				"\"%s\" (%dx%d), keeping previous FBO",
 				tl->app_id != NULL ? tl->app_id : "?",
 				box.width, box.height);
-			rc->dirty = true;
+			rc->content_dirty = true;
 			rounded_fallback(rc);
 			continue;
 		}
 
-		if (!rounded_render_mask(rc)) {
+		/* border-ring pixels blend the content beneath them: expand the
+		 * damage so they are re-masked (and republished) too */
+		rounded_expand_ring(rc);
+
+		if (!rounded_render_mask(rc, partial ? &rc->fbo_damage : NULL)) {
 			wlr_log(WLR_ERROR, "rounded: offscreen render failed");
-			rc->dirty = true;
+			rc->content_dirty = true;
 			rounded_fallback(rc);
 			continue;
 		}
 
 		/* publish the fresh result; NULL damage = whole buffer */
-		wlr_scene_buffer_set_buffer_with_damage(rc->node, rc->rounded_buf,
-			NULL);
-		wlr_scene_buffer_set_dest_size(rc->node, box.width, box.height);
+		rounded_publish(rc, &box, partial ? &rc->fbo_damage : NULL);
+		rounded_note_surface_state(rc);
 		/* NOTE: do not clear dirty here - it was cleared before the render,
 		 * and any commit that arrived mid-render has already set it true
 		 * again, so the next frame re-renders the newer content. */

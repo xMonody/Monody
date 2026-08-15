@@ -227,6 +227,8 @@ void set_fullscreen(struct server *server, struct toplevel *tl,
 	}
 	tl->user_moved = true; /* fullscreen state: stop auto-centering */
 	tl->fullscreen = fullscreen;
+	/* border width/color depend on the fullscreen state */
+	rounded_cache_dirty(tl);
 	if (fullscreen) {
 		/* remember the pre-fullscreen geometry so it can be restored
 		 * later.  Keep this separate from restore_box: entering fullscreen
@@ -454,6 +456,10 @@ void focus_toplevel(struct server *server, struct toplevel *tl) {
 		}
 	}
 	server->focused = tl;
+	/* the border color depends on focus: re-render both the newly focused
+	 * window and the previously focused one so their rounded FBOs pick up
+	 * the new focused/unfocused border color (see border.c) */
+	border_focus_changed(tl, prev);
 	wlr_xdg_toplevel_set_activated(tl->xdg_toplevel, true);
 	if (tl->fthandle != NULL) {
 		wlr_foreign_toplevel_handle_v1_set_activated(tl->fthandle, true);
@@ -550,9 +556,9 @@ static void toplevel_subsurface_commit(struct wl_listener *listener,
 	(void)data;
 	/* wlroots re-applies opacity 1.0 to the committed subsurface; re-hide it
 	 * (only if a valid rounded FBO is already published) and re-render the
-	 * FBO cache */
-	rounded_cache_hide_content(ts->tl);
-	rounded_cache_dirty(ts->tl);
+	 * FBO cache.  The damage the commit attached is collected for a partial
+	 * re-render (rounded.c). */
+	rounded_cache_subsurface_commit(ts->tl, ts);
 }
 
 static void toplevel_subsurface_add(struct toplevel *tl,
@@ -566,6 +572,12 @@ static void toplevel_subsurface_destroy(struct wl_listener *listener,
 	wl_list_remove(&ts->new_subsurface.link);
 	wl_list_remove(&ts->destroy.link);
 	wl_list_remove(&ts->link);
+	/* the subsurface's old content must vanish from the cached FBO: a full
+	 * re-render (with its damage bookkeeping gone) covers that */
+	if (ts->tl->rounded != NULL) {
+		rounded_cache_dirty(ts->tl);
+	}
+	pixman_region32_fini(&ts->damage);
 	free(ts);
 }
 
@@ -586,6 +598,11 @@ static void toplevel_subsurface_add(struct toplevel *tl,
 	}
 	ts->tl = tl;
 	ts->subsurface = subsurface;
+	pixman_region32_init(&ts->damage);
+	ts->prev_x = subsurface->current.x;
+	ts->prev_y = subsurface->current.y;
+	ts->prev_w = subsurface->surface->current.width;
+	ts->prev_h = subsurface->surface->current.height;
 	ts->commit.notify = toplevel_subsurface_commit;
 	wl_signal_add(&subsurface->surface->events.commit, &ts->commit);
 	ts->new_subsurface.notify = toplevel_subsurface_new_subsurface;
@@ -627,6 +644,7 @@ static void toplevel_destroy_subsurfaces(struct toplevel *tl) {
 		wl_list_remove(&ts->new_subsurface.link);
 		wl_list_remove(&ts->destroy.link);
 		wl_list_remove(&ts->link);
+		pixman_region32_fini(&ts->damage);
 		free(ts);
 	}
 }
@@ -828,9 +846,10 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 		}
 	}
 	/* geometry (and thus the resize/title zones under the cursor) may have
-	 * changed; the rounded FBO cache must follow any content/geometry change */
-	rounded_cache_hide_content(tl);
-	rounded_cache_dirty(tl);
+	 * changed; the rounded FBO cache must follow any content/geometry
+	 * change.  Damage attached to the commit is collected for a partial
+	 * re-render (rounded.c). */
+	rounded_cache_content_commit(tl);
 	update_cursor_style(tl->server);
 }
 

@@ -17,6 +17,21 @@
 #define CONFIG_MOVE_CURSOR     "all-scroll"   /* cursor shown while dragging (moving) a window */
 
 #define CONFIG_ROUNDED_RADIUS    8           /* 窗口圆角半径 (px) */
+#define CONFIG_BORDER_WIDTH      1.5           /* 窗口边框宽度 (px) */
+
+#define CONFIG_BORDER_FOCUSED    0x9F6680    /* 有焦点边框颜色 0xRRGGBB */
+#define CONFIG_BORDER_UNFOCUSED  0x9F6680    /* 无焦点边框颜色 0xRRGGBB */
+
+#define CONFIG_BORDER_TOP_LEFT   0xea9a71    /* 顶部边框左1/3颜色 (最小化) */
+#define CONFIG_BORDER_TOP_MID    0xbf7e80    /* 顶部边框中1/3颜色 (最大化) */
+#define CONFIG_BORDER_TOP_RIGHT  0xd55f6f    /* 顶部边框右1/3颜色 (关闭) */
+#define CONFIG_BORDER_GRADIENT_WIDTH 10       /* 顶部边框三段颜色拼接处渐变宽度 (px) */
+
+#define CONFIG_FULLSCREEN_BORDER 1            /* 全屏窗口是否显示边框 0/1 */
+#define CONFIG_FULLSCREEN_BORDER_COLOR 0xea9a71 /* 全屏边框颜色 0xRRGGBB */
+
+#define CONFIG_SHADOW_WIDTH      20          /* 窗口阴影宽度 (px) */
+#define CONFIG_SHADOW_ALPHA      0.2f        /* 窗口阴影不透明度 0.0-1.0 */
 
 #define CONFIG_TITLEBAR_HEIGHT  8           /* 移动窗口标题栏范围 */
 #define CONFIG_EDGE_THICKNESS   8           /* 调整窗口大小边框范围 */
@@ -71,7 +86,6 @@ static const struct config_app_shortcut config_app_shortcuts[] = {
 /* 强制「无装饰」窗口（合成器接管边框）：这些客户端自己画 CSD，但它们的
  * 边缘调整依赖合成器，所以由合成器提供 resize 边缘 + resize 光标，并忽略
  * 它们自己的 resize 光标形状。
- *
  * 匹配是大小写不敏感的 app_id 前缀匹配（xdg_toplevel.set_app_id），所以
  * 一条前缀能覆盖多个变体（如 "org.chromium" 覆盖 org.chromium.Chromium）。
  * 以后装了新应用（例如 VS Code）直接在这里加一行前缀即可，不用改 toplevel.c。 */
