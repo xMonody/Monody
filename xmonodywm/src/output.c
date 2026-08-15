@@ -31,6 +31,9 @@ static void monitor_frame(struct wl_listener *listener, void *data) {
 	struct monitor *mon = wl_container_of(listener, mon, frame);
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
+	/* render any dirty offscreen rounded-corner FBOs before the scene
+	 * samples them */
+	rounded_render_all(mon->server);
 	if (!wlr_scene_output_commit(mon->scene_output, NULL)) {
 		return;
 	}

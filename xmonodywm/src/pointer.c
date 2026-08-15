@@ -546,7 +546,7 @@ void update_cursor_style(struct server *server) {
 	}
 }
 
-static void begin_resize(struct server *server, struct toplevel *tl,
+void begin_resize(struct server *server, struct toplevel *tl,
 		uint32_t edges) {
 	/* never resize a maximized window */
 	if (server->resizing || tl->xdg_toplevel->current.maximized) {

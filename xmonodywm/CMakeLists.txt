@@ -17,6 +17,8 @@ pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
 pkg_check_modules(PIXMAN REQUIRED IMPORTED_TARGET pixman-1)
 pkg_check_modules(LIBINPUT REQUIRED IMPORTED_TARGET libinput)
+pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
+pkg_check_modules(GLESV2 REQUIRED IMPORTED_TARGET glesv2)
 
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
@@ -113,6 +115,7 @@ set(COMPOSITOR_SOURCES
 	src/scene.c
 	src/ime.c
 	src/toplevel.c
+	src/rounded.c
 	src/place.c
 	src/layer.c
 	src/output.c
@@ -147,6 +150,8 @@ target_link_libraries(xmonodywm PRIVATE
 	PkgConfig::CJSON
 	PkgConfig::LIBINPUT
 	PkgConfig::PIXMAN
+	PkgConfig::EGL
+	PkgConfig::GLESV2
 	m
 )
 install(TARGETS xmonodywm RUNTIME DESTINATION bin)

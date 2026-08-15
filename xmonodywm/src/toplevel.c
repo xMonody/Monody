@@ -23,6 +23,7 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <wlr/util/box.h>
@@ -538,6 +539,98 @@ static void toplevel_unfocus(struct server *server, struct toplevel *tl) {
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* subsurfaces: their commits mark the rounded FBO cache dirty so the
+ * offscreen copy is re-rendered when any content changes */
+/* ------------------------------------------------------------------ */
+
+static void toplevel_subsurface_commit(struct wl_listener *listener,
+		void *data) {
+	struct toplevel_subsurface *ts = wl_container_of(listener, ts, commit);
+	(void)data;
+	/* wlroots re-applies opacity 1.0 to the committed subsurface; re-hide it
+	 * (only if a valid rounded FBO is already published) and re-render the
+	 * FBO cache */
+	rounded_cache_hide_content(ts->tl);
+	rounded_cache_dirty(ts->tl);
+}
+
+static void toplevel_subsurface_add(struct toplevel *tl,
+		struct wlr_subsurface *subsurface);
+
+static void toplevel_subsurface_destroy(struct wl_listener *listener,
+		void *data) {
+	struct toplevel_subsurface *ts = wl_container_of(listener, ts, destroy);
+	(void)data;
+	wl_list_remove(&ts->commit.link);
+	wl_list_remove(&ts->new_subsurface.link);
+	wl_list_remove(&ts->destroy.link);
+	wl_list_remove(&ts->link);
+	free(ts);
+}
+
+static void toplevel_subsurface_new_subsurface(struct wl_listener *listener,
+		void *data) {
+	struct toplevel_subsurface *ts = wl_container_of(listener, ts,
+		new_subsurface);
+	/* a nested subsurface (subsurface of a subsurface): track it exactly
+	 * like a direct subsurface so its commits also invalidate the FBO */
+	toplevel_subsurface_add(ts->tl, data);
+}
+
+static void toplevel_subsurface_add(struct toplevel *tl,
+		struct wlr_subsurface *subsurface) {
+	struct toplevel_subsurface *ts = calloc(1, sizeof(*ts));
+	if (ts == NULL) {
+		return;
+	}
+	ts->tl = tl;
+	ts->subsurface = subsurface;
+	ts->commit.notify = toplevel_subsurface_commit;
+	wl_signal_add(&subsurface->surface->events.commit, &ts->commit);
+	ts->new_subsurface.notify = toplevel_subsurface_new_subsurface;
+	wl_signal_add(&subsurface->surface->events.new_subsurface,
+		&ts->new_subsurface);
+	ts->destroy.notify = toplevel_subsurface_destroy;
+	wl_signal_add(&subsurface->events.destroy, &ts->destroy);
+	wl_list_insert(tl->subsurfaces.prev, &ts->link);
+	/* a newly added subsurface must be hidden from the scene and folded
+	 * into the next FBO render */
+	rounded_cache_hide_content(tl);
+	rounded_cache_dirty(tl);
+
+	/* subsurfaces that already exist below this one are only reachable by
+	 * walking the scene graph; the new_subsurface listener above catches
+	 * only future ones, so recurse into the existing children too */
+	struct wlr_subsurface *child;
+	wl_list_for_each(child, &subsurface->surface->current.subsurfaces_below,
+			current.link) {
+		toplevel_subsurface_add(tl, child);
+	}
+	wl_list_for_each(child, &subsurface->surface->current.subsurfaces_above,
+			current.link) {
+		toplevel_subsurface_add(tl, child);
+	}
+}
+
+static void xdg_toplevel_new_subsurface(struct wl_listener *listener,
+		void *data) {
+	struct toplevel *tl = wl_container_of(listener, tl, new_subsurface);
+	toplevel_subsurface_add(tl, data);
+}
+
+/* remove all subsurface bookkeeping before the toplevel is freed */
+static void toplevel_destroy_subsurfaces(struct toplevel *tl) {
+	struct toplevel_subsurface *ts, *tmp;
+	wl_list_for_each_safe(ts, tmp, &tl->subsurfaces, link) {
+		wl_list_remove(&ts->commit.link);
+		wl_list_remove(&ts->new_subsurface.link);
+		wl_list_remove(&ts->destroy.link);
+		wl_list_remove(&ts->link);
+		free(ts);
+	}
+}
+
 static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 	struct toplevel *tl = wl_container_of(listener, tl, map);
 	struct server *server = tl->server;
@@ -561,6 +654,8 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 	}
 	focus_toplevel(server, tl);
 	update_toplevel_output(server, tl);
+	rounded_cache_hide_content(tl);
+	rounded_cache_dirty(tl);
 	/* a window mapped under a stationary cursor must immediately show the
 	 * right cursor (title zone / resize edge), without waiting for motion */
 	update_cursor_style(server);
@@ -600,6 +695,12 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	 * their scene trees are children of tl->scene_tree and each popup frees
 	 * itself when its own tree is destroyed (which happens when the popup's
 	 * xdg surface goes away or with tl->scene_tree). */
+	toplevel_destroy_subsurfaces(tl);
+	wl_list_remove(&tl->new_subsurface.link);
+	if (tl->rounded != NULL) {
+		rounded_cache_destroy(tl->rounded);
+		tl->rounded = NULL;
+	}
 	wl_list_remove(&tl->toplevel_destroy.link);
 	wl_list_remove(&tl->map.link);
 	wl_list_remove(&tl->unmap.link);
@@ -608,6 +709,7 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&tl->request_minimize.link);
 	wl_list_remove(&tl->request_fullscreen.link);
 	wl_list_remove(&tl->request_move.link);
+	wl_list_remove(&tl->request_resize.link);
 	wl_list_remove(&tl->set_title.link);
 	wl_list_remove(&tl->set_app_id.link);
 	wl_list_remove(&tl->new_popup.link);
@@ -726,7 +828,9 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 		}
 	}
 	/* geometry (and thus the resize/title zones under the cursor) may have
-	 * changed */
+	 * changed; the rounded FBO cache must follow any content/geometry change */
+	rounded_cache_hide_content(tl);
+	rounded_cache_dirty(tl);
 	update_cursor_style(tl->server);
 }
 
@@ -779,6 +883,24 @@ static void xdg_toplevel_request_move(struct wl_listener *listener, void *data) 
 	 * (Windows behavior) while a mere click does nothing. */
 	begin_move(server, tl, server->cursor->x, server->cursor->y);
 	focus_toplevel(server, tl);
+}
+
+static void xdg_toplevel_request_resize(struct wl_listener *listener,
+		void *data) {
+	struct toplevel *tl = wl_container_of(listener, tl, request_resize);
+	struct wlr_xdg_toplevel_resize_event *event = data;
+	struct server *server = tl->server;
+	if (tl->minimized || server->resizing || server->moving ||
+			tl->xdg_toplevel->base == NULL ||
+			!tl->xdg_toplevel->base->surface->mapped ||
+			tl->xdg_toplevel->current.maximized) {
+		return;
+	}
+	/* a client-side-decorated client (e.g. Chromium) asks the compositor to
+	 * resize it: enter the compositor's resize grab with the edges the
+	 * client chose; pointer motion drives update_resize() and the button
+	 * release ends it, exactly like the compositor's own edge handles. */
+	begin_resize(server, tl, event->edges);
 }
 
 static void xdg_toplevel_set_title(struct wl_listener *listener, void *data) {
@@ -1025,6 +1147,8 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 		return;
 	}
 	xdg_surface_tag(tl->scene_tree, TAG_TOPLEVEL, tl);
+	wl_list_init(&tl->subsurfaces);
+	tl->rounded = rounded_cache_create(server, tl);
 
 	tl->fthandle = wlr_foreign_toplevel_handle_v1_create(
 		server->foreign_toplevel_manager);
@@ -1072,12 +1196,26 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 		&tl->request_fullscreen);
 	tl->request_move.notify = xdg_toplevel_request_move;
 	wl_signal_add(&xdg_toplevel->events.request_move, &tl->request_move);
+	tl->request_resize.notify = xdg_toplevel_request_resize;
+	wl_signal_add(&xdg_toplevel->events.request_resize, &tl->request_resize);
 	tl->set_title.notify = xdg_toplevel_set_title;
 	wl_signal_add(&xdg_toplevel->events.set_title, &tl->set_title);
 	tl->set_app_id.notify = xdg_toplevel_set_app_id;
 	wl_signal_add(&xdg_toplevel->events.set_app_id, &tl->set_app_id);
 	tl->new_popup.notify = xdg_toplevel_new_popup;
 	wl_signal_add(&base->events.new_popup, &tl->new_popup);
+	tl->new_subsurface.notify = xdg_toplevel_new_subsurface;
+	wl_signal_add(&base->surface->events.new_subsurface, &tl->new_subsurface);
+	/* subsurfaces that already exist before this listener was added */
+	struct wlr_subsurface *subsurface;
+	wl_list_for_each(subsurface, &base->surface->current.subsurfaces_below,
+			current.link) {
+		toplevel_subsurface_add(tl, subsurface);
+	}
+	wl_list_for_each(subsurface, &base->surface->current.subsurfaces_above,
+			current.link) {
+		toplevel_subsurface_add(tl, subsurface);
+	}
 
 	/* the toplevel destroy handler (frees the foreign toplevel handle and
 	 * unlinks the listeners above) must run before wlroots asserts that the
@@ -1102,9 +1240,17 @@ static bool toplevel_force_undecorated(struct toplevel *tl) {
 	if (tl->app_id == NULL) {
 		return false;
 	}
-	/* QQ (linuxqq) and variants: frameless, requests CSD, but its own
-	 * resize handles never resize the window */
-	return strncasecmp(tl->app_id, "qq", 2) == 0;
+	/* config-driven list (see config.h): clients that draw their own CSD
+	 * frame but whose edge resize relies on the compositor.  Case-
+	 * insensitive prefix match against the app_id, so a single entry
+	 * covers variants. */
+	for (size_t i = 0; config_force_undecorated[i] != NULL; i++) {
+		size_t len = strlen(config_force_undecorated[i]);
+		if (strncasecmp(tl->app_id, config_force_undecorated[i], len) == 0) {
+			return true;
+		}
+	}
+	return false;
 }
 
 static void decoration_destroy(struct wl_listener *listener, void *data) {

@@ -16,6 +16,8 @@
 #define CONFIG_TITLEBAR_CURSOR "pointer"      /* cursor shown while hovering the title strip */
 #define CONFIG_MOVE_CURSOR     "all-scroll"   /* cursor shown while dragging (moving) a window */
 
+#define CONFIG_ROUNDED_RADIUS    8           /* 窗口圆角半径 (px) */
+
 #define CONFIG_TITLEBAR_HEIGHT  8           /* 移动窗口标题栏范围 */
 #define CONFIG_EDGE_THICKNESS   8           /* 调整窗口大小边框范围 */
 
@@ -64,6 +66,25 @@ static const struct config_app_shortcut config_app_shortcuts[] = {
 	{ MODKEY, XKB_KEY_w, "wezterm", NULL },
 	{ MODKEY, XKB_KEY_k, "kitty",   NULL },
 	{ MODKEY, XKB_KEY_q, "qq",      NULL },
+};
+
+/* 强制「无装饰」窗口（合成器接管边框）：这些客户端自己画 CSD，但它们的
+ * 边缘调整依赖合成器，所以由合成器提供 resize 边缘 + resize 光标，并忽略
+ * 它们自己的 resize 光标形状。
+ *
+ * 匹配是大小写不敏感的 app_id 前缀匹配（xdg_toplevel.set_app_id），所以
+ * 一条前缀能覆盖多个变体（如 "org.chromium" 覆盖 org.chromium.Chromium）。
+ * 以后装了新应用（例如 VS Code）直接在这里加一行前缀即可，不用改 toplevel.c。 */
+static const char *const config_force_undecorated[] = {
+	"qq",
+	"chromium",
+	"google-chrome",
+	"firefox",
+	"org.chromium",
+	"org.mozilla",
+	"code",                 /* VS Code / VS Codium */
+	"com.visualstudio.code", /* 官方 VS Code */
+	NULL,
 };
 
 #endif /* XMONODYWM_CONFIG_H */

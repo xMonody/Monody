@@ -68,6 +68,7 @@ struct wlr_swapchain;  /* defined in wlr/render/swapchain.h */
 struct server;
 struct toplevel;
 struct layer_surface;
+struct rounded_cache;  /* defined in rounded.c */
 
 /* one connected input method (fcitx5/ibus); only the first one is used */
 struct ime {
@@ -134,12 +135,31 @@ struct toplevel_popup {
 	struct wl_listener destroy;
 };
 
+/* a subsurface of a toplevel's surface (Firefox/Chromium cover the window
+ * edges with subsurfaces); its commit marks the rounded FBO cache dirty so
+ * the offscreen copy is re-rendered when any content changes */
+struct toplevel_subsurface {
+	struct toplevel *tl;
+	struct wlr_subsurface *subsurface;
+	struct wl_list link; /* tl->subsurfaces */
+	struct wl_listener commit;
+	struct wl_listener new_subsurface; /* nested subsurfaces */
+	struct wl_listener destroy;
+};
+
 struct toplevel {
 	struct server *server;
 	struct wlr_xdg_toplevel *xdg_toplevel;
 	struct wlr_scene_tree *scene_tree;
 	struct wlr_foreign_toplevel_handle_v1 *fthandle;
 	struct wlr_output *last_output;
+
+	/* offscreen rounded-corner FBO cache (rounded.c); NULL when disabled */
+	struct rounded_cache *rounded;
+
+	/* subsurfaces of the window surface (their commits mark the rounded
+	 * cache dirty); cleaned up together with the toplevel */
+	struct wl_list subsurfaces;      /* struct toplevel_subsurface.link */
 
 	/* popups are scene-tree children of scene_tree and clean themselves up
 	 * when their tree is destroyed, so no explicit popup list is needed */
@@ -189,9 +209,11 @@ struct toplevel {
 	struct wl_listener request_minimize;
 	struct wl_listener request_fullscreen;
 	struct wl_listener request_move;
+	struct wl_listener request_resize;
 	struct wl_listener set_title;
 	struct wl_listener set_app_id;
 	struct wl_listener new_popup;
+	struct wl_listener new_subsurface;
 
 	struct wl_listener ft_request_maximize;
 	struct wl_listener ft_request_minimize;
@@ -434,6 +456,14 @@ void maximized_box(struct server *server, struct wlr_output *output,
 void server_new_toplevel(struct wl_listener *listener, void *data);
 void server_new_decoration(struct wl_listener *listener, void *data);
 
+/* ---- rounded.c: offscreen rounded-corner FBO cache ---- */
+struct rounded_cache *rounded_cache_create(struct server *server,
+	struct toplevel *tl);
+void rounded_cache_destroy(struct rounded_cache *rc);
+void rounded_cache_dirty(struct toplevel *tl);
+void rounded_cache_hide_content(struct toplevel *tl);
+void rounded_render_all(struct server *server);
+
 /* ---- place.c: initial window placement ----
  * size fully client-driven, position centered on the output (screen) */
 bool place_toplevel(struct server *server, struct toplevel *tl);
@@ -494,6 +524,7 @@ void ime_new_text_input(struct wl_listener *listener, void *data);
 /* ---- pointer.c: cursor interaction (move / resize / gestures) ---- */
 void begin_move(struct server *server, struct toplevel *tl,
 	double ref_x, double ref_y);
+void begin_resize(struct server *server, struct toplevel *tl, uint32_t edges);
 void end_move(struct server *server);
 void end_resize(struct server *server);
 void update_cursor_style(struct server *server);
