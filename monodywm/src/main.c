@@ -1,5 +1,5 @@
 /*
- * xmonodywm - a minimal floating Wayland compositor built on wlroots 0.19
+ * monodywm - a minimal floating Wayland compositor built on wlroots 0.19
  *
  * Entry point: creates the display, backend, renderer and scene, creates
  * every protocol global (through wlroots, which implements them
@@ -157,14 +157,14 @@ static void run_startup_file(void) {
 	char path[4096];
 
 	if (xdg != NULL && xdg[0] != '\0') {
-		int ret = snprintf(path, sizeof(path), "%s/xmonodywm/run", xdg);
+		int ret = snprintf(path, sizeof(path), "%s/monodywm/run", xdg);
 
 		if (ret < 0 || (size_t)ret >= sizeof(path)) {
 			wlr_log(WLR_ERROR, "run_startup_file: configuration path is too long");
 			return;
 		}
 	} else if (home != NULL && home[0] != '\0') {
-		int ret = snprintf(path, sizeof(path), "%s/.config/xmonodywm/run", home);
+		int ret = snprintf(path, sizeof(path), "%s/.config/monodywm/run", home);
 		if (ret < 0 || (size_t)ret >= sizeof(path)) { wlr_log(WLR_ERROR,
 				"run_startup_file: configuration path is too long");
 			return;
@@ -451,10 +451,10 @@ int main(int argc, char *argv[]) {
 	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
 	char ipc_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 	if (runtime_dir != NULL && runtime_dir[0] != '\0') {
-		snprintf(ipc_path, sizeof(ipc_path), "%s/xmonodywm.sock",
+		snprintf(ipc_path, sizeof(ipc_path), "%s/monodywm.sock",
 			runtime_dir);
 	} else {
-		snprintf(ipc_path, sizeof(ipc_path), "/tmp/xmonodywm.sock");
+		snprintf(ipc_path, sizeof(ipc_path), "/tmp/monodywm.sock");
 	}
 	server.ipc_fd = -1;
 	if (!ipc_server_init(&server, ipc_path)) {

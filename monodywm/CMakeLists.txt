@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(xmonodywm VERSION 0.1.0 LANGUAGES C)
+project(monodywm VERSION 0.1.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -140,12 +140,12 @@ target_include_directories(protocol_stubs PUBLIC ${PROTOCOL_GEN_DIR})
 target_link_libraries(protocol_stubs PUBLIC PkgConfig::WAYLAND_CLIENT)
 
 
-add_executable(xmonodywm ${COMPOSITOR_SOURCES})
-target_include_directories(xmonodywm PRIVATE
+add_executable(monodywm ${COMPOSITOR_SOURCES})
+target_include_directories(monodywm PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/src
 	${PROTOCOL_GEN_DIR} # wlroots' installed headers #include generated ones
 )
-target_link_libraries(xmonodywm PRIVATE
+target_link_libraries(monodywm PRIVATE
 	PkgConfig::WLROOTS
 	PkgConfig::WAYLAND_SERVER
 	PkgConfig::XKBCOMMON
@@ -156,7 +156,7 @@ target_link_libraries(xmonodywm PRIVATE
 	PkgConfig::GLESV2
 	m
 )
-install(TARGETS xmonodywm RUNTIME DESTINATION bin)
+install(TARGETS monodywm RUNTIME DESTINATION bin)
 
 # bundled test clients (exercise the compositor; need the generated
 # client-side protocol code)
@@ -233,7 +233,7 @@ target_link_libraries(test-ime-app PRIVATE protocol_stubs PkgConfig::WAYLAND_CLI
 # executables only reference some of them directly, so a plain dependency
 # on the target is enough for the rest
 add_custom_target(protocols DEPENDS ${PROTOCOL_GEN_FILES})
-add_dependencies(xmonodywm protocols)
+add_dependencies(monodywm protocols)
 add_dependencies(protocol_stubs protocols)
 add_dependencies(test-client protocols)
 add_dependencies(test-interaction protocols)

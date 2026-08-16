@@ -1,19 +1,19 @@
-# aiwm
+# Monody
 
-一个最小的 **Wayland 浮动窗口合成器**（`xmonodywm`）+ 一个 **Win11 风格浮动状态栏**
-（`xmonodybar`）。两者通过一个 Unix domain socket 用换行分隔的 JSON 通信。
+一个最小的 **Wayland 浮动窗口合成器**（`monodywm`）+ 一个 **Win11 风格浮动状态栏**
+（`monodybar`）。两者通过一个 Unix domain socket 用换行分隔的 JSON 通信。
 
-- `xmonodywm` — 基于 **wlroots 0.19**、用 **C** 编写的浮动合成器，无自绘窗口装饰。
-- `xmonodybar` — 基于 **Qt 6 + Qt Quick (QML) + wlr-layer-shell**（`layer-shell-qt`）的任务栏。
+- `monodywm` — 基于 **wlroots 0.19**、用 **C** 编写的浮动合成器，无自绘窗口装饰。
+- `monodybar` — 基于 **Qt 6 + Qt Quick (QML) + wlr-layer-shell**（`layer-shell-qt`）的任务栏。
 
 ```
 aiwm/
-├── xmonodywm/   合成器（C + wlroots 0.19）
+├── monodywm/   合成器（C + wlroots 0.19）
 │   ├── src/     合成器源码
 │   ├── Protocol/ Wayland 协议 XML
-│   ├── xmonodywm/run  示例自动启动脚本
+│   ├── monodywm/run  示例自动启动脚本
 │   └── test-*.c 打包的测试客户端
-├── xmonodybar/  状态栏（Qt 6 + QML + layer-shell-qt）
+├── monodybar/  状态栏（Qt 6 + QML + layer-shell-qt）
 │   ├── src/     状态栏源码
 │   ├── qml/     QML 界面
 │   └── scripts/mock_compositor.py  模拟合成器
@@ -32,7 +32,7 @@ aiwm/
 sudo apt install build-essential cmake pkg-config git
 ```
 
-### 合成器 `xmonodywm`
+### 合成器 `monodywm`
 
 ```sh
 sudo apt install \
@@ -75,7 +75,7 @@ sudo ninja -C build install
 
 安装完成后确认 `pkg-config --modversion wlroots-0.19` 能输出 `0.19.x`。
 
-### 状态栏 `xmonodybar`
+### 状态栏 `monodybar`
 
 ```sh
 sudo apt install qt6-base-dev qt6-declarative-dev qt6-wayland liblayershellqtinterface-dev
@@ -116,23 +116,23 @@ sudo apt install foot wlr-randr swaybg fcitx5 fcitx5-chinese-addons
 ### 合成器
 
 ```sh
-cd xmonodywm
+cd monodywm
 PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig \
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-产物：`build/xmonodywm`（以及 `build/test-*` 测试客户端）。
+产物：`build/monodywm`（以及 `build/test-*` 测试客户端）。
 
 ### 状态栏
 
 ```sh
-cd xmonodybar
+cd monodybar
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-产物：`build/xmonodybar`。
+产物：`build/monodybar`。
 
 ---
 
@@ -143,12 +143,12 @@ cmake --build build -j$(nproc)
 从 TTY（或带 seat 的会话）运行：
 
 ```sh
-cd xmonodywm
-./build/xmonodywm [-s 'startup command']
+cd monodywm
+./build/monodywm [-s 'startup command']
 ```
 
-合成器启动后（后端就绪、Wayland socket 生效）会读取 **`~/.config/xmonodywm/run`**
-（若设置了 `$XDG_CONFIG_HOME` 则为 `$XDG_CONFIG_HOME/xmonodywm/run`），每行一条命令，
+合成器启动后（后端就绪、Wayland socket 生效）会读取 **`~/.config/monodywm/run`**
+（若设置了 `$XDG_CONFIG_HOME` 则为 `$XDG_CONFIG_HOME/monodywm/run`），每行一条命令，
 经 `/bin/sh -c` 执行；每行自动后台化，空行与 `#` 注释被跳过，每行启动时记录日志。
 每个子进程用 `setsid()` 脱离会话、stdin/stdout/stderr 重定向到 `/dev/null`，
 并由 SIGCHLD 回收，避免僵尸进程。典型内容：
@@ -167,16 +167,16 @@ fcitx5 -d
 在 Wayland 会话内（合成器必须实现 `wlr-layer-shell`）：
 
 ```sh
-cd xmonodybar
-./build/xmonodybar
+cd monodybar
+./build/monodybar
 ```
 
-状态栏默认连接 `$XDG_RUNTIME_DIR/xmonodywm.sock`（回退 `/tmp/xmonodywm.sock`），
+状态栏默认连接 `$XDG_RUNTIME_DIR/monodywm.sock`（回退 `/tmp/monodywm.sock`），
 可用 `--socket <path>` 覆盖。它会每秒钟自动重连，合成器重启后无需手动重启状态栏。
 
 ---
 
-## `xmonodywm` — 合成器
+## `monodywm` — 合成器
 
 ### 设计要点
 
@@ -290,13 +290,13 @@ fcitx5 -d
 `test-ime-app`（配合真实 fcitx5）等。无头运行：
 
 ```sh
-WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 ./build/xmonodywm \
+WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 ./build/monodywm \
   -s 'WAYLAND_DISPLAY=wayland-0 ./build/test-client; WAYLAND_DISPLAY=wayland-0 ./build/test-interaction'
 ```
 
 ---
 
-## `xmonodybar` — 状态栏
+## `monodybar` — 状态栏
 
 ### 特性
 
@@ -309,7 +309,7 @@ WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 ./build/xmonodywm \
 ### IPC 协议
 
 合成器与状态栏通过 Unix socket 通信
-（`$XDG_RUNTIME_DIR/xmonodywm.sock`，回退 `/tmp/xmonodywm.sock`），每行一个 JSON。
+（`$XDG_RUNTIME_DIR/monodywm.sock`，回退 `/tmp/monodywm.sock`），每行一个 JSON。
 
 合成器 → 状态栏：
 
@@ -355,7 +355,7 @@ SVG 用 **librsvg via gdk-pixbuf**（运行时加载，Qt 自带 SVG 渲染器�
 ### 测试
 
 ```sh
-cd xmonodybar
+cd monodybar
 python3 scripts/mock_compositor.py
 # mock> add 1 firefox
 # mock> add 2 kitty
@@ -370,7 +370,7 @@ python3 scripts/mock_compositor.py
 
 ## 源码布局
 
-**`xmonodywm/src/`**
+**`monodywm/src/`**
 
 ```
 config.h    所有可调项：快捷键、抓取区
@@ -386,7 +386,7 @@ ime.c       输入法中继：zwp_input_method_v2 <-> zwp_text_input_v3（fcitx5
 pointer.c   光标交互（移动 / 缩放 / 标题条手势）
 ```
 
-**`xmonodybar/src/` 与 `qml/`**
+**`monodybar/src/` 与 `qml/`**
 
 ```
 src/main.cpp            layer-shell 设置（顶层、锚点、独占区）
@@ -402,5 +402,5 @@ scripts/mock_compositor.py
 
 ## 各组件详细文档
 
-- 合成器：见 [`xmonodywm/README.md`](xmonodywm/README.md)
-- 状态栏：见 [`xmonodybar/README.md`](xmonodybar/README.md)
+- 合成器：见 [`monodywm/README.md`](monodywm/README.md)
+- 状态栏：见 [`monodybar/README.md`](monodybar/README.md)

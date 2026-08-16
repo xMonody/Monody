@@ -1,4 +1,4 @@
-# xmonodywm
+# monodywm
 
 A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
 
@@ -205,7 +205,7 @@ cmake --build build -j
 Run (from a TTY / with a seat):
 
 ```sh
-./build/xmonodywm [-s 'startup command']
+./build/monodywm [-s 'startup command']
 ```
 
 **Autostart** — once the compositor is up (backend started, Wayland socket
@@ -273,7 +273,7 @@ Shortcuts are consumed by the compositor and not forwarded to clients.
 ## IPC (status bar)
 
 The compositor exposes a Unix domain socket at
-`$XDG_RUNTIME_DIR/xmonodywm.sock` (fallback `/tmp/xmonodywm.sock`). Status
+`$XDG_RUNTIME_DIR/monodywm.sock` (fallback `/tmp/monodywm.sock`). Status
 bars connect and receive **newline-delimited JSON** messages. Each window is
 identified by a stable `id` assigned by the compositor; `app_id` is the
 client-provided application id (e.g. `firefox`).
@@ -378,6 +378,6 @@ compositor; CMake builds them from the client headers generated out of
 The compositor is exercised headless with:
 
 ```sh
-WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 ./build/xmonodywm \
+WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 ./build/monodywm \
   -s 'WAYLAND_DISPLAY=wayland-0 ./build/test-client; WAYLAND_DISPLAY=wayland-0 ./build/test-interaction'
 ```

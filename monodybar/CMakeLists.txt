@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(xmonodybar VERSION 1.0 LANGUAGES CXX)
+project(monodybar VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,7 +11,7 @@ qt_standard_project_setup()
 
 find_package(LayerShellQt REQUIRED)
 
-qt_add_executable(xmonodybar
+qt_add_executable(monodybar
     src/main.cpp
     src/BarConfig.h
     src/BarController.cpp
@@ -24,7 +24,7 @@ qt_add_executable(xmonodybar
     src/IconProvider.h
 )
 
-target_include_directories(xmonodybar PRIVATE
+target_include_directories(monodybar PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
@@ -33,9 +33,9 @@ target_include_directories(xmonodybar PRIVATE
 # automatic plugin import in qt6_finalize_target warns about each one. The
 # plugins are loaded from the Qt plugin directory at runtime anyway (shared
 # build), so skip the import scan to silence those warnings.
-set_target_properties(xmonodybar PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+set_target_properties(monodybar PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
 
-target_link_libraries(xmonodybar PRIVATE
+target_link_libraries(monodybar PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Quick
@@ -44,11 +44,11 @@ target_link_libraries(xmonodybar PRIVATE
     LayerShellQt::Interface
 )
 
-qt_add_resources(xmonodybar "qml"
+qt_add_resources(monodybar "qml"
     PREFIX "/"
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
     FILES qml/main.qml
           win.png
 )
 
-install(TARGETS xmonodybar RUNTIME DESTINATION bin)
+install(TARGETS monodybar RUNTIME DESTINATION bin)

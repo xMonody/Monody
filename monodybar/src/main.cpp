@@ -14,21 +14,21 @@
 // Must match `height` in qml/main.qml (also used as the exclusive zone).
 // Height comes from barCfg::height so the bar and its exclusive zone stay in sync.
 
-// The xmonodywm compositor puts its IPC socket in $XDG_RUNTIME_DIR and only
+// The monodywm compositor puts its IPC socket in $XDG_RUNTIME_DIR and only
 // falls back to /tmp when that variable is unset. Mirror it so the bar finds
 // the socket automatically.
 static QString defaultSocketPath()
 {
     const QByteArray rt = qgetenv("XDG_RUNTIME_DIR");
     if (!rt.isEmpty())
-        return QString::fromLocal8Bit(rt) + QLatin1String("/xmonodywm.sock");
-    return QStringLiteral("/tmp/xmonodywm.sock");
+        return QString::fromLocal8Bit(rt) + QLatin1String("/monodywm.sock");
+    return QStringLiteral("/tmp/monodywm.sock");
 }
 
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
-    QCoreApplication::setApplicationName(QStringLiteral("xmonodybar"));
+    QCoreApplication::setApplicationName(QStringLiteral("monodybar"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0"));
 
     QCommandLineParser parser;
@@ -36,7 +36,7 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     parser.addVersionOption();
     QCommandLineOption socketOption(QStringLiteral("socket"),
-                                    QStringLiteral("Compositor socket path (default: $XDG_RUNTIME_DIR/xmonodywm.sock)"),
+                                    QStringLiteral("Compositor socket path (default: $XDG_RUNTIME_DIR/monodywm.sock)"),
                                     QStringLiteral("path"),
                                     defaultSocketPath());
     parser.addOption(socketOption);
@@ -113,7 +113,7 @@ int main(int argc, char *argv[])
             shell->setMargins(QMargins(0, 0, 0, 0));
             shell->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
             shell->setExclusiveZone(0);
-            shell->setScope(QStringLiteral("xmonodybar-launcher"));
+            shell->setScope(QStringLiteral("monodybar-launcher"));
         }
     } else {
         qWarning() << "launcher window not found";
