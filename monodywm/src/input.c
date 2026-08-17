@@ -384,7 +384,7 @@ static bool keyboard_shortcut(struct server *server,
 		/* base syms are already unshifted, but lower anyway for layouts
 		 * where the base level carries an uppercase letter */
 		xkb_keysym_t sym = xkb_keysym_to_lower(syms[i]);
-		if (sym == CONFIG_KEY_QUIT && (main_mod || quit_mod)) {
+		if (sym == CONFIG_KEY_QUIT && main_mod /*(main_mod || quit_mod)*/ ) {
 			wl_display_terminate(server->display);
 			return true;
 		}

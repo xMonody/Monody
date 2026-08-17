@@ -1,6 +1,6 @@
 # monodywm
 
-A minimal floating Wayland compositor written in C on top of **wlroots 0.19**.
+A minimal floating Wayland compositor written in C on top of **wlroots 0.20**.
 
 ## Design
 

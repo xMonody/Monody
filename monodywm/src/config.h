@@ -62,7 +62,7 @@
 #define CONFIG_KEY_CLOSE XKB_KEY_c           // close app
 #define CONFIG_KEY_CLOSE_OTHER XKB_KEY_x      // close other apps
 
-#define MODKEY1 WLR_MODIFIER_LOGO                        // win
+#define MODKEY1 WLR_MODIFIER_LOGO                       // win
 #define MODKEY2 WLR_MODIFIER_SHIFT | WLR_MODIFIER_ALT    // shift+alt
 #define MODKEY3 WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL   // shift+ctrl
 #define MODKEY WLR_MODIFIER_ALT   | WLR_MODIFIER_CTRL   // alt+ctrl

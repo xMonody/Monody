@@ -10,7 +10,7 @@ add_compile_definitions(WLR_USE_UNSTABLE)
 
 find_package(PkgConfig REQUIRED)
 
-pkg_check_modules(WLROOTS REQUIRED IMPORTED_TARGET wlroots-0.19)
+pkg_check_modules(WLROOTS REQUIRED IMPORTED_TARGET wlroots-0.20)
 pkg_check_modules(WAYLAND_SERVER REQUIRED IMPORTED_TARGET wayland-server)
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)

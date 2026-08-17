@@ -369,9 +369,9 @@ int main(int argc, char *argv[]) {
 	server.new_decoration.notify = server_new_decoration;
 	wl_signal_add(&decoration_manager->events.new_toplevel_decoration, &server.new_decoration);
 	server.new_ime.notify = ime_new_input_method;
-	wl_signal_add(&input_method_manager->events.input_method, &server.new_ime);
+	wl_signal_add(&input_method_manager->events.new_input_method, &server.new_ime);
 	server.new_text_input.notify = ime_new_text_input;
-	wl_signal_add(&text_input_manager->events.text_input, &server.new_text_input);
+	wl_signal_add(&text_input_manager->events.new_text_input, &server.new_text_input);
 
 	server.cursor_motion.notify = cursor_motion;
 	wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);

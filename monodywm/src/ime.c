@@ -550,7 +550,11 @@ bool ime_keyboard_grabbed(struct server *server,
  * active text input */
 static void ime_commit(struct wl_listener *listener, void *data) {
 	struct ime *ime = wl_container_of(listener, ime, commit);
-	struct wlr_input_method_v2 *context = data;
+	/* wlroots 0.20 emits input_method->events.commit with NULL data (the
+	 * context is the ime's own input method); 0.19 passed the input method
+	 * as data - either way ime->input_method is the right object */
+	(void)data;
+	struct wlr_input_method_v2 *context = ime->input_method;
 	struct server *server = ime->server;
 	struct wlr_text_input_v3 *text_input = server->focused_text_input;
 	wlr_log(WLR_DEBUG, "ime: IM commit active=%d text_input=%p serial=%u commit='%s' preedit='%s'",

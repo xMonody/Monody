@@ -3,12 +3,12 @@
 一个最小的 **Wayland 浮动窗口合成器**（`monodywm`）+ 一个 **Win11 风格浮动状态栏**
 （`monodybar`）。两者通过一个 Unix domain socket 用换行分隔的 JSON 通信。
 
-- `monodywm` — 基于 **wlroots 0.19**、用 **C** 编写的浮动合成器，无自绘窗口装饰。
+- `monodywm` — 基于 **wlroots 0.20**、用 **C** 编写的浮动合成器，无自绘窗口装饰。
 - `monodybar` — 基于 **Qt 6 + Qt Quick (QML) + wlr-layer-shell**（`layer-shell-qt`）的任务栏。
 
 ```
 aiwm/
-├── monodywm/   合成器（C + wlroots 0.19）
+├── monodywm/   合成器（C + wlroots 0.20）
 │   ├── src/     合成器源码
 │   ├── Protocol/ Wayland 协议 XML
 │   ├── monodywm/run  示例自动启动脚本
@@ -53,27 +53,27 @@ sudo apt install \
 | `libgles2-mesa-dev` | `glesv2` |
 | `libdrm-dev` | wlroots 头文件传递依赖的 libdrm 头文件 |
 
-**wlroots 0.19 需要自行编译。** Debian 13 只打包了 `libwlroots-0.18-dev`（0.18），
-而本项目 `find_package` 要求 `wlroots-0.19`。用 meson/ninja 从源码构建并安装到
+**wlroots 0.20 需要自行编译。** Debian 13 只打包了 `libwlroots-0.18-dev`（0.18），
+而本项目 `find_package` 要求 `wlroots-0.20`。用 meson/ninja 从源码构建并安装到
 `/usr/local`（这就是合成器构建时为什么带
 `PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig`）：
 
 ```sh
-# wlroots 0.19 的构建依赖（除了上面已列出的库外还需要）：
+# wlroots 0.20 的构建依赖（除了上面已列出的库外还需要）：
 sudo apt install meson ninja-build wayland-protocols \
   libgbm-dev liblcms2-dev libudev-dev libseat-dev \
-  libdisplay-info-dev libliftoff-dev hwdata \
-  libxcb1-dev libxcb-dri3-dev libxcb-present-dev libxcb-render0-dev \
-  libxcb-render-util0-dev libxcb-shm0-dev libxcb-xfixes0-dev libxcb-xinput-dev
+  libdisplay-info-dev libliftoff-dev hwdata 
+  #libxcb1-dev libxcb-dri3-dev libxcb-present-dev libxcb-render0-dev \
+  #libxcb-render-util0-dev libxcb-shm0-dev libxcb-xfixes0-dev libxcb-xinput-dev
 
-git clone https://gitlab.freedesktop.org/wlroots/wlroots.git -b 0.19
+git clone https://gitlab.freedesktop.org/wlroots/wlroots.git -b 0.20
 cd wlroots
 meson setup build --prefix=/usr/local --buildtype=release
 ninja -C build
 sudo ninja -C build install
 ```
 
-安装完成后确认 `pkg-config --modversion wlroots-0.19` 能输出 `0.19.x`。
+安装完成后确认 `pkg-config --modversion wlroots-0.20` 能输出 `0.20.x`。
 
 ### 状态栏 `monodybar`
 
