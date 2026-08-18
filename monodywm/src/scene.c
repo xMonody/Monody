@@ -86,3 +86,28 @@ bool pointer_over_popup(struct server *server) {
 	}
 	return false;
 }
+
+/* is the cursor over a layer-shell surface (bar, menu overlay, ...)?  These
+ * sit above the windows, so while the cursor is on one the compositor must
+ * not start a move/resize grab on the window below - the click has to reach
+ * the layer surface (taskbar buttons, menu items) instead. */
+bool pointer_over_layer_surface(struct server *server) {
+	double sx, sy;
+	struct wlr_scene_node *node = wlr_scene_node_at(
+		&server->scene->tree.node, server->cursor->x, server->cursor->y,
+		&sx, &sy);
+	if (node == NULL) {
+		return false;
+	}
+	struct wlr_scene_node *n = node;
+	while (n != NULL) {
+		if (n->data != NULL) {
+			struct scene_tag *tag = n->data;
+			if (tag->type == TAG_LAYER) {
+				return true;
+			}
+		}
+		n = n->parent != NULL ? &n->parent->node : NULL;
+	}
+	return false;
+}

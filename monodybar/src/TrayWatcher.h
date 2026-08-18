@@ -8,6 +8,7 @@
 #include <QStringList>
 
 class TrayItem;
+class NotificationDaemon;
 
 /**
  * The org.kde.StatusNotifierWatcher DBus service (the system-tray host).
@@ -33,6 +34,13 @@ public:
     /** Claim "org.kde.StatusNotifierWatcher" on the session bus. */
     bool registerService();
 
+    /**
+     * Route incoming freedesktop notifications to the tray item owned by
+     * the notifying process (matched by pid), so apps like QQ that never
+     * signal SNI attention can still flash their tray icon on messages.
+     */
+    void connectNotificationDaemon(NotificationDaemon *daemon);
+
     QStringList registeredItems() const { return m_registeredList; }
     bool isHostRegistered() const { return m_hostRegistered; }
     int protocolVersion() const { return 0; }
@@ -49,6 +57,9 @@ public slots:
 signals:
     void itemAdded(TrayItem *item);
     void itemRemoved(TrayItem *item);
+
+private slots:
+    void onNotificationReceived(quint64 pid);
 
 private:
     void sendItemRegistered(const QString &service);

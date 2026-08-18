@@ -432,6 +432,10 @@ struct toplevel *toplevel_at(struct server *server);
 /* the cursor is over a popup surface (menu / dropdown / tooltip): the popup
  * wins the pointer over the compositor frame (resize edges, title strip) */
 bool pointer_over_popup(struct server *server);
+/* the cursor is over a layer-shell surface (status bar / menu overlay):
+ * like popups it wins the pointer - no window move/resize grabs while the
+ * cursor is on it, clicks go to the layer surface instead */
+bool pointer_over_layer_surface(struct server *server);
 /* a dialog / transient window (declared a parent toplevel via
  * xdg_toplevel.set_parent, as GTK/Qt dialogs do): not resizable, no
  * maximize/minimize, its top border is a single close button */

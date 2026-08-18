@@ -34,17 +34,29 @@ QVariant TrayModel::data(const QModelIndex &index, int role) const
     case IconRole: {
         // Prefer the item-provided bitmap; fall back to the themed icon by
         // name (reuses the bar's icon provider).  A revision suffix makes
-        // QML re-request the image when the item changes its icon.
+        // QML re-request the image when the item changes its icon.  While
+        // the item wants attention (message received) the attention icon is
+        // used instead - same provider, same key, the model resolves it.
         const int rev = m_revisions.value(item, 0);
+        const auto enc = [](const QString &s) {
+            return QString::fromLatin1(QUrl::toPercentEncoding(s));
+        };
+        if (item->attentionActive() && item->hasAttentionPixmap())
+            return QStringLiteral("image://trayicons/%1?v=%2")
+                .arg(enc(item->key()), QString::number(rev));
+        if (item->attentionActive() && !item->attentionIconName().isEmpty())
+            return QStringLiteral("image://icons/%1")
+                .arg(enc(item->attentionIconName()));
         if (item->hasPixmap())
             return QStringLiteral("image://trayicons/%1?v=%2")
-                .arg(QString::fromLatin1(QUrl::toPercentEncoding(item->key())),
-                     QString::number(rev));
+                .arg(enc(item->key()), QString::number(rev));
         if (!item->iconName().isEmpty())
             return QStringLiteral("image://icons/%1")
-                .arg(QString::fromLatin1(QUrl::toPercentEncoding(item->iconName())));
+                .arg(enc(item->iconName()));
         return {};
     }
+    case AttentionRole:
+        return item->attentionActive();
     case TitleRole:
         return item->title();
     case ItemKeyRole:
@@ -59,14 +71,18 @@ QHash<int, QByteArray> TrayModel::roleNames() const
         { IconRole, "icon" },
         { TitleRole, "title" },
         { ItemKeyRole, "itemKey" },
+        { AttentionRole, "attention" },
     };
 }
 
 QImage TrayModel::pixmap(const QString &key) const
 {
     for (TrayItem *item : m_items) {
-        if (item->key() == key)
+        if (item->key() == key) {
+            if (item->attentionActive() && item->hasAttentionPixmap())
+                return item->attentionIconPixmap();
             return item->iconPixmap();
+        }
     }
     return {};
 }
@@ -77,16 +93,44 @@ void TrayModel::activate(int row)
         m_items.at(row)->activate(0, 0);
 }
 
-void TrayModel::contextMenu(int row)
-{
-    if (row >= 0 && row < m_items.size())
-        m_items.at(row)->contextMenu(0, 0);
-}
-
 void TrayModel::secondaryActivate(int row)
 {
     if (row >= 0 && row < m_items.size())
         m_items.at(row)->secondaryActivate(0, 0);
+}
+
+bool TrayModel::fetchMenu(int row)
+{
+    if (row < 0 || row >= m_items.size())
+        return false;
+    return m_items.at(row)->fetchMenu();
+}
+
+QVariantList TrayModel::menuItems(int row, int parentId)
+{
+    if (row < 0 || row >= m_items.size())
+        return {};
+    const QList<MenuItem> children = m_items.at(row)->menuChildren(parentId);
+    QVariantList out;
+    out.reserve(children.size());
+    for (const MenuItem &mi : children) {
+        if (!mi.visible)
+            continue;
+        out << QVariantMap{
+            { QStringLiteral("id"), mi.id },
+            { QStringLiteral("label"), mi.label },
+            { QStringLiteral("enabled"), mi.enabled },
+            { QStringLiteral("type"), mi.type },
+            { QStringLiteral("hasChildren"), !mi.children.isEmpty() },
+        };
+    }
+    return out;
+}
+
+void TrayModel::triggerMenu(int row, int id)
+{
+    if (row >= 0 && row < m_items.size())
+        m_items.at(row)->triggerMenuItem(id);
 }
 
 void TrayModel::onItemAdded(TrayItem *item)
@@ -97,6 +141,7 @@ void TrayModel::onItemAdded(TrayItem *item)
     emit countChanged();
     connect(item, &TrayItem::iconChanged, this, &TrayModel::onItemChanged);
     connect(item, &TrayItem::titleChanged, this, &TrayModel::onItemChanged);
+    connect(item, &TrayItem::attentionChanged, this, &TrayModel::onItemChanged);
 }
 
 void TrayModel::onItemRemoved(TrayItem *item)
@@ -119,5 +164,5 @@ void TrayModel::onItemChanged()
     m_revisions[item] = m_revisions.value(item, 0) + 1;
     const int row = m_items.indexOf(item);
     if (row >= 0)
-        emit dataChanged(index(row), index(row), { IconRole, TitleRole });
+        emit dataChanged(index(row), index(row), { IconRole, TitleRole, AttentionRole });
 }

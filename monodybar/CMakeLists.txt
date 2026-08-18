@@ -22,6 +22,8 @@ qt_add_executable(monodybar
     src/IconFinder.h
     src/IconProvider.cpp
     src/IconProvider.h
+    src/NotificationDaemon.cpp
+    src/NotificationDaemon.h
     src/TrayIconProvider.cpp
     src/TrayIconProvider.h
     src/TrayItem.cpp
@@ -59,6 +61,7 @@ qt_add_resources(monodybar "qml"
     FILES qml/main.qml
           qml/LiquidGlass.qml
           win.png
+          protocol/org.freedesktop.Notifications.xml
 )
 
 install(TARGETS monodybar RUNTIME DESTINATION bin)

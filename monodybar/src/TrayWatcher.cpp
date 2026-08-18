@@ -1,5 +1,6 @@
 #include "TrayWatcher.h"
 
+#include "NotificationDaemon.h"
 #include "TrayItem.h"
 
 #include <QDBusConnection>
@@ -26,8 +27,7 @@ bool TrayWatcher::registerService()
         qWarning() << "tray: cannot register StatusNotifierWatcher:"
                    << bus.lastError().message();
         return false;
-    }
-    // Expose the interface on both object paths: the spec's
+    }    // Expose the interface on both object paths: the spec's
     // /StatusNotifierWatcher and the /org/kde/... spelling used by some
     // clients.
     const auto flags = QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllProperties;
@@ -41,6 +41,24 @@ bool TrayWatcher::registerService()
     // clients see IsStatusNotifierHostRegistered=true right away.
     RegisterStatusNotifierHost(bus.baseService());
     return true;
+}
+
+void TrayWatcher::connectNotificationDaemon(NotificationDaemon *daemon)
+{
+    connect(daemon, &NotificationDaemon::notificationReceived,
+            this, &TrayWatcher::onNotificationReceived);
+}
+
+void TrayWatcher::onNotificationReceived(quint64 pid)
+{
+    if (pid == 0)
+        return;
+    for (TrayItem *item : std::as_const(m_items)) {
+        if (item->pid() == pid) {
+            item->flashAttention();
+            break;
+        }
+    }
 }
 
 void TrayWatcher::RegisterStatusNotifierHost(const QString &service)

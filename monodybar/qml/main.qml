@@ -233,6 +233,7 @@ Window {
                         hovered: trayMouse.containsMouse
                     }
                     Image {
+                        id: trayIcon
                         anchors.centerIn: parent
                         width: 24
                         height: 24
@@ -240,6 +241,33 @@ Window {
                         sourceSize: Qt.size(48, 48)
                         fillMode: Image.PreserveAspectFit
                         smooth: true
+
+                        // Message notification: gentle 1 Hz blink while the
+                        // item wants attention (brief dim, mostly bright).
+                        // opacity is a plain binding - the animation drives
+                        // blinkOpacity, not opacity itself - so the icon
+                        // snaps back to fully opaque the instant attention
+                        // ends, even mid-fade (no stuck grey icon).
+                        property real blinkOpacity: 1.0
+                        opacity: model.attention ? blinkOpacity : 1.0
+
+                        SequentialAnimation {
+                            id: blinkAnim
+                            running: model.attention
+                            loops: Animation.Infinite
+                            NumberAnimation {
+                                target: trayIcon
+                                property: "blinkOpacity"
+                                to: 0.15; duration: 120
+                                easing.type: Easing.OutQuad
+                            }
+                            NumberAnimation {
+                                target: trayIcon
+                                property: "blinkOpacity"
+                                to: 1.0; duration: 880
+                                easing.type: Easing.InQuad
+                            }
+                        }
                     }
                     MouseArea {
                         id: trayMouse
@@ -247,8 +275,10 @@ Window {
                         hoverEnabled: true
                         acceptedButtons: Qt.LeftButton | Qt.RightButton
                         onClicked: (mouse) => {
+                            // Left click activates the app; right click shows
+                            // the app's own menu via the dbusmenu protocol.
                             if (mouse.button === Qt.RightButton)
-                                trayModel.contextMenu(index)
+                                contextMenu.trayOpenFor(index, trayIcon)
                             else
                                 trayModel.activate(index)
                         }
@@ -324,9 +354,12 @@ Window {
         width: Screen.width
         height: Screen.height
 
-        // real logical size, see the launcher's note on fractional scales
-        readonly property real trueWidth: width
-        readonly property real trueHeight: Screen.height * width / Screen.width
+        // real logical size, see the launcher's note on fractional scales.
+        // The bar window (win) is always configured by the compositor with
+        // the true logical width, while this overlay's own width only settles
+        // after its first show - so derive both from win.width.
+        readonly property real trueWidth: win.width
+        readonly property real trueHeight: Screen.height * win.width / Screen.width
 
         property int windowId: -1
 
@@ -351,6 +384,8 @@ Window {
             // Win11-style pop-in
             menuPanel.opacity = 0
             menuPanel.scale = 0.95
+            trayMenuPanel.visible = false
+            menuPanel.visible = true
             contextMenu.visible = true
             menuAnim.start()
         }
@@ -424,6 +459,143 @@ Window {
                 }
             }
         }
+
+        // ---- tray icon context menu: the app's own menu via the SNI Menu
+        //      property / com.canonical.dbusmenu protocol ----
+        property int trayItemIndex: -1
+        property var trayStack: []
+
+        function trayOpenFor(index, anchor) {
+            trayItemIndex = index
+            trayStack = []
+            if (!trayModel.fetchMenu(index))
+                return
+            trayShowItems(trayModel.menuItems(index, 0))
+            var p = anchor.mapToItem(win.contentItem, 0, 0)
+            trayMenuPanel.x = Math.round(p.x + (anchor.width - trayMenuPanel.width) / 2)
+            var gy = (barCfgAtTop ? 0 : contextMenu.trueHeight - win.height) + p.y
+            trayMenuPanel.y = barCfgAtTop
+                          ? Math.round(gy + anchor.height + 6)
+                          : Math.round(gy - trayMenuPanel.height - 6)
+            trayMenuPanel.x = Math.max(4, Math.min(trayMenuPanel.x,
+                contextMenu.trueWidth - trayMenuPanel.width - 4))
+            trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
+                contextMenu.trueHeight - trayMenuPanel.height - 4))
+            trayMenuPanel.opacity = 0
+            trayMenuPanel.scale = 0.95
+            menuPanel.visible = false
+            trayMenuPanel.visible = true
+            contextMenu.visible = true
+            trayMenuAnim.start()
+        }
+        function trayShowItems(items) {
+            trayListModel.clear()
+            if (trayStack.length > 0)
+                trayListModel.append({ id: -1, label: qsTr("← 返回"), enabled: true,
+                                       type: "", hasChildren: false, isBack: true })
+            for (var i = 0; i < items.length; i++)
+                trayListModel.append(items[i])
+        }
+        function trayOpenSubmenu(parentId) {
+            trayStack.push(parentId)
+            trayShowItems(trayModel.menuItems(trayItemIndex, parentId))
+            trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
+                contextMenu.trueHeight - trayMenuPanel.height - 4))
+        }
+        function trayGoBack() {
+            if (trayStack.length === 0)
+                return
+            trayStack.pop()
+            var parent = trayStack.length > 0 ? trayStack[trayStack.length - 1] : 0
+            trayShowItems(trayModel.menuItems(trayItemIndex, parent))
+            trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
+                contextMenu.trueHeight - trayMenuPanel.height - 4))
+        }
+
+        ListModel { id: trayListModel }
+
+        ParallelAnimation {
+            id: trayMenuAnim
+            NumberAnimation { target: trayMenuPanel; property: "opacity"; to: 1; duration: 140; easing.type: Easing.OutCubic }
+            NumberAnimation { target: trayMenuPanel; property: "scale"; to: 1; duration: 140; easing.type: Easing.OutCubic }
+        }
+
+        Rectangle {
+            id: trayMenuPanel
+            visible: false
+            width: 180
+            height: trayListModel.count * 34 + 2 * Math.max(0, trayListModel.count - 1) + 8
+            radius: 8
+            color: Qt.rgba(barCfgBarColor.r, barCfgBarColor.g, barCfgBarColor.b, 0.96)
+            border.color: "#55666666"
+            border.width: 1
+            opacity: 0
+            scale: 0.95
+            z: 2
+
+            Column {
+                anchors.fill: parent
+                anchors.margins: 4
+                spacing: 2
+
+                Repeater {
+                    model: trayListModel
+                    delegate: Item {
+                        width: trayMenuPanel.width - 8
+                        height: 34
+
+                        Rectangle {
+                            visible: model.type === "separator"
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.right: parent.right
+                            anchors.rightMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            height: 1
+                            color: "#33ffffff"
+                        }
+                        Rectangle {
+                            visible: model.type !== "separator"
+                            anchors.fill: parent
+                            radius: 5
+                            color: trayItemMouse.containsMouse && model.enabled ? "#26ffffff" : "transparent"
+                        }
+                        Text {
+                            visible: model.type !== "separator"
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: model.label
+                            color: model.enabled ? "#ffffff" : "#66ffffff"
+                            font.pixelSize: 13
+                        }
+                        Text {
+                            visible: model.type !== "separator" && model.hasChildren
+                            anchors.right: parent.right
+                            anchors.rightMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "›"
+                            color: "#aaffffff"
+                            font.pixelSize: 16
+                        }
+                        MouseArea {
+                            id: trayItemMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: {
+                                if (model.type === "separator") return
+                                if (model.isBack) { contextMenu.trayGoBack(); return }
+                                if (model.hasChildren) { contextMenu.trayOpenSubmenu(model.id); return }
+                                var idx = contextMenu.trayItemIndex
+                                contextMenu.closeMenu()
+                                trayModel.triggerMenu(idx, model.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ---- launcher (start menu): full-screen layer surface, see main.cpp ----
@@ -442,11 +614,10 @@ Window {
         // The compositor configures this overlay at the output's real
         // logical size.  With a fractional output scale (e.g. 1.75) Qt
         // rounds Screen.* up to the next integer scale (2.0), so Screen
-        // reports the wrong logical size; the configured width (this
-        // window's width) is authoritative, so re-derive the height from
-        // the same ratio.
-        readonly property real trueWidth: width
-        readonly property real trueHeight: Screen.height * width / Screen.width
+        // reports the wrong logical size; the bar window's configured width
+        // is authoritative, so re-derive the height from the same ratio.
+        readonly property real trueWidth: win.width
+        readonly property real trueHeight: Screen.height * win.width / Screen.width
 
         // 3 rows x 4 columns, 88x96px cells
         property int launcherCols: 4

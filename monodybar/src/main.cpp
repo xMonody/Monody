@@ -9,11 +9,11 @@
 #include "BarController.h"
 #include "DesktopApps.h"
 #include "IconProvider.h"
+#include "NotificationDaemon.h"
 #include "TrayIconProvider.h"
 #include "TrayItem.h"
 #include "TrayModel.h"
 #include "TrayWatcher.h"
-#include "LayerShellQt/shell.h"
 #include "LayerShellQt/window.h"
 
 // Must match `height` in qml/main.qml (also used as the exclusive zone).
@@ -52,8 +52,8 @@ int main(int argc, char *argv[])
     parser.addOption(socketOption);
     parser.process(app);
 
-    // Ask Qt Wayland to use the layer-shell shell integration for this app.
-    LayerShellQt::Shell::useLayerShell();
+    // Layer-shell is the Qt Wayland shell integration since Qt 6.5; no need
+    // to call LayerShellQt::Shell::useLayerShell() anymore (deprecated).
 
     BarController controller;
     controller.setSocketPath(parser.value(socketOption));
@@ -67,6 +67,13 @@ int main(int argc, char *argv[])
     TrayModel trayModel;
     trayModel.setWatcher(&trayWatcher);
     trayWatcher.registerService();
+
+    // Freedesktop notification daemon: apps like QQ announce incoming
+    // messages only through Notify (never via SNI signals), so owning the
+    // name lets us flash their tray icon on a message.
+    NotificationDaemon notificationDaemon;
+    trayWatcher.connectNotificationDaemon(&notificationDaemon);
+    notificationDaemon.registerService();
 
     QQmlApplicationEngine engine;
     engine.addImageProvider(QStringLiteral("icons"), new IconProvider);

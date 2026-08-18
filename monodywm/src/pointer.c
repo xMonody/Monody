@@ -32,7 +32,7 @@
 static bool is_in_titlebar_zone(struct server *server, struct toplevel *tl) {
 	/* a popup (menu / dropdown) floating over the strip wins the pointer:
 	 * no move / minimize / maximize / close grab while the cursor is on it */
-	if (pointer_over_popup(server)) {
+	if (pointer_over_popup(server) || pointer_over_layer_surface(server)) {
 		return false;
 	}
 	if (tl->decoration_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE &&
@@ -325,7 +325,7 @@ static uint32_t toplevel_resize_edges(struct server *server,
 	/* a popup covering the window's border wins the pointer: no resize
 	 * handle while the cursor is over it (the popup is the focused
 	 * surface and its clicks must reach the menu, not a resize grab) */
-	if (pointer_over_popup(server)) {
+	if (pointer_over_popup(server) || pointer_over_layer_surface(server)) {
 		return 0;
 	}
 	if (tl->minimized || tl->xdg_toplevel->base == NULL ||
@@ -1189,6 +1189,13 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 	/* WLR_BUTTON_PRESSED */
 	if (server->moving || server->zone_press || server->resizing) {
 		return; /* already grabbed */
+	}
+
+	/* the cursor is on a layer-shell surface (taskbar / menu overlay): the
+	 * click belongs to it, never start a window move/resize grab through it */
+	if (pointer_over_layer_surface(server)) {
+		wlr_seat_pointer_notify_button(server->seat, time_msec, button, state);
+		return;
 	}
 
 	/* an implicit grab is active: a previous press was forwarded to the
