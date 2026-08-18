@@ -27,25 +27,10 @@ inline constexpr int radius = 10;
 // (叠加在 barColor 之上, barColor 自带的 alpha 会被忽略)
 inline constexpr qreal opacity = 0.9;
 
-// 活动 (聚焦) 窗口图标是否显示背景
-inline constexpr bool activeBgEnabled = false;
-
 // 状态栏背景色 (RGB)
 inline const QColor barColor = QColor(0x20, 0x20, 0x20);
 
 // 活动 (聚焦) 窗口图标的背景色
 inline const QColor activeBg = QColor(0x4d, 0x4d, 0x4d, 0x59);
-
-// 聚焦窗口图标下方的下划线宽度 (像素)
-inline constexpr int underlineWidth = 3;
-
-// 聚焦窗口图标下方的下划线高度 (像素)
-inline constexpr int underlineHeight = 3;
-
-// 下划线与图标底部的距离 (像素): 正数向上, 负数向下
-inline constexpr int underlineOffset = 0;
-
-// 聚焦窗口图标下方的下划线颜色
-inline const QColor underlineColor = QColor(0x9c, 0xcc, 0xff, 0xd9);
 
 } // namespace barCfg

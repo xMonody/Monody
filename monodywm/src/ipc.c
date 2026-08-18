@@ -8,7 +8,8 @@
  * Events broadcast to every client: window_added, window_removed,
  * window_focus (id 0 = nothing focused), window_full, window_list.
  * Client requests (one JSON object per line): list_windows,
- * focus_window {"id": N}, close_window {"id": N}.
+ * focus_window {"id": N}, close_window {"id": N},
+ * maximize_window {"id": N} (toggles), minimize_window {"id": N}.
  */
 
 #include "ipc.h"
@@ -144,6 +145,26 @@ static void ipc_handle_line(struct server *server, struct ipc_client *client,
 					toplevel_by_id(server, (int)id->valuedouble);
 				if (tl != NULL) {
 					close_toplevel(tl);
+				}
+			}
+		} else if (strcmp(action->valuestring, "maximize_window") == 0) {
+			/* toggle: maximize when restored, restore when maximized */
+			cJSON *id = cJSON_GetObjectItem(root, "id");
+			if (id != NULL && cJSON_IsNumber(id)) {
+				struct toplevel *tl =
+					toplevel_by_id(server, (int)id->valuedouble);
+				if (tl != NULL) {
+					set_maximized(server, tl,
+						!tl->xdg_toplevel->current.maximized);
+				}
+			}
+		} else if (strcmp(action->valuestring, "minimize_window") == 0) {
+			cJSON *id = cJSON_GetObjectItem(root, "id");
+			if (id != NULL && cJSON_IsNumber(id)) {
+				struct toplevel *tl =
+					toplevel_by_id(server, (int)id->valuedouble);
+				if (tl != NULL) {
+					set_minimized(server, tl, true);
 				}
 			}
 		}

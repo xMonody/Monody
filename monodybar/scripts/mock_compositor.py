@@ -14,6 +14,8 @@ Mock compositor for testing xmonodybar, following the xmonodywm IPC protocol:
     {"action":"focus_window","id":1}
     {"action":"list_windows"}                 answered with a fresh window_list
     {"action":"close_window","id":1}
+    {"action":"maximize_window","id":1}      (compositor toggles)
+    {"action":"minimize_window","id":1}
 
 Commands (typed at the "mock>" prompt):
   add <id> <app_id>   window_added

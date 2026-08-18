@@ -1050,6 +1050,17 @@ static void process_cursor_motion(struct server *server, uint32_t time_msec) {
 
 static void process_cursor_button(struct server *server, uint32_t time_msec,
 		uint32_t button, enum wl_pointer_button_state state) {
+	/* A layer-shell overlay (e.g. the start menu) can be destroyed while the
+	 * cursor is over it; wlroots then clears the pointer focus and it is
+	 * only re-established by a motion event, so the first click after the
+	 * overlay disappears would be dropped by the seat. Re-run the hit test
+	 * on the first press so the surface under the cursor gets the click. */
+	if (state == WL_POINTER_BUTTON_STATE_PRESSED
+			&& server->seat->pointer_state.button_count == 0
+			&& server->seat->pointer_state.focused_surface == NULL) {
+		process_cursor_motion(server, time_msec);
+	}
+
 	/* remember whether each button is held: the wheel gestures (scroll up =
 	 * maximize, scroll down = minimize) key off the right button, and the
 	 * chord gestures key off both */

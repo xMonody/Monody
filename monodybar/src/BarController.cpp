@@ -326,12 +326,32 @@ void BarController::sendLine(const QByteArray &line)
 
 void BarController::activateWindow(int id)
 {
+    sendWindowAction(id, "focus_window");
+}
+
+void BarController::closeWindow(int id)
+{
+    sendWindowAction(id, "close_window");
+}
+
+void BarController::maximizeWindow(int id)
+{
+    sendWindowAction(id, "maximize_window");
+}
+
+void BarController::minimizeWindow(int id)
+{
+    sendWindowAction(id, "minimize_window");
+}
+
+void BarController::sendWindowAction(int id, const char *action)
+{
     for (int i = 0; i < m_windows.rowCount(); ++i) {
         const QModelIndex idx = m_windows.index(i, 0);
         if (m_windows.data(idx, WindowListModel::IdRole).toInt() == id) {
             // xmonodywm command protocol
             QJsonObject obj;
-            obj.insert(QStringLiteral("action"), QStringLiteral("focus_window"));
+            obj.insert(QStringLiteral("action"), QLatin1String(action));
             obj.insert(QStringLiteral("id"), id);
             sendLine(QJsonDocument(obj).toJson(QJsonDocument::Compact));
             return;

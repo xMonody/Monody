@@ -61,10 +61,11 @@ Window {
             width: 40
             height: barHeight
 
-            Rectangle {                        // hover feedback only
-                anchors.fill: parent
-                radius: 4
-                color: startMouse.containsMouse ? "#33ffffff" : "transparent"
+            // liquid-glass hover/active background, same size as task icons
+            LiquidGlass {
+                anchors.centerIn: parent
+                lit: launcher.visible              // lit while the start menu is open
+                hovered: startMouse.containsMouse
             }
             Image {                            // Windows logo from win.png
                 width: 24
@@ -74,6 +75,12 @@ Window {
                 sourceSize: Qt.size(120, 120)
                 fillMode: Image.PreserveAspectFit
                 smooth: true
+
+                // shrink while pressed, spring back on release
+                scale: startMouse.pressed ? 0.85 : 1.0
+                Behavior on scale {
+                    NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                }
             }
             MouseArea {
                 id: startMouse
@@ -97,30 +104,14 @@ Window {
 
                 readonly property bool focused: model.id === bar.focusedId
 
-                // Win11-style focus background + hover highlight.
-                // Focused: a shorter rounded bar (narrower vertically) with
-                // the underline pill inside; hover: full-height highlight.
-                // The icon itself keeps its fixed size (never scaled).
-                Rectangle {
+                // Liquid-glass focus/hover background (shared component):
+                // translucent tint + specular sheen + fine noise + light edge.
+                // Same size in every state; only the tint depth changes.
+                LiquidGlass {
                     id: taskBg
-                    width: 36
-                    height: taskItem.focused ? 30 : 36
                     anchors.centerIn: parent
-                    radius: 4
-                    color: (taskItem.focused && barCfgActiveBgEnabled) ? barCfgActiveBg
-                                                                       : (itemMouse.containsMouse ? "#26ffffff" : "transparent")
-
-                    // Win11 underline pill, inside the focused background
-                    Rectangle {
-                        visible: taskItem.focused
-                        width: barCfgUnderlineWidth
-                        height: barCfgUnderlineHeight
-                        radius: Math.max(barCfgUnderlineHeight / 2, 1)
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        anchors.bottom: parent.bottom
-                        anchors.bottomMargin: barCfgUnderlineOffset
-                        color: barCfgUnderline
-                    }
+                    lit: taskItem.focused
+                    hovered: itemMouse.containsMouse
                 }
 
                 // app icon from the theme (rendered by IconProvider, so
@@ -136,6 +127,12 @@ Window {
                     fillMode: Image.PreserveAspectFit
                     smooth: true
                     visible: status === Image.Ready
+
+                    // shrink while pressed, spring back on release
+                    scale: itemMouse.pressed ? 0.85 : 1.0
+                    Behavior on scale {
+                        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                    }
                 }
 
                 // fallback tile when no themed icon was found
@@ -147,6 +144,12 @@ Window {
                     anchors.verticalCenterOffset: -2
                     radius: 5
                     color: taskbarColor.hash(model.appId)
+
+                    // shrink while pressed, spring back on release
+                    scale: itemMouse.pressed ? 0.85 : 1.0
+                    Behavior on scale {
+                        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                    }
                     Text {
                         anchors.centerIn: parent
                         text: model.appId.charAt(0).toUpperCase()
@@ -162,9 +165,19 @@ Window {
                     id: itemMouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    onClicked: {
-                        bar.activateWindow(model.id)
-                        closeLauncher()
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onClicked: (mouse) => {
+                        if (mouse.button === Qt.RightButton) {
+                            contextMenu.openFor(model.id, taskItem)
+                        } else {
+                            contextMenu.closeMenu()
+                            // Windows behaviour: clicking a focused icon minimizes it
+                            if (taskItem.focused)
+                                bar.minimizeWindow(model.id)
+                            else
+                                bar.activateWindow(model.id)
+                            closeLauncher()
+                        }
                     }
                 }
             }
@@ -225,6 +238,121 @@ Window {
                 onTriggered: {
                     timeText.text = Qt.formatTime(new Date(), "HH:mm")
                     dateText.text = Qt.formatDate(new Date(), "M/d/yyyy")
+                }
+            }
+        }
+    }
+
+    // ---- task icon context menu: full-screen overlay window, see main.cpp ----
+    //      Positioned near the cursor; any click outside the panel closes it
+    //      (same architecture as the launcher).
+    Window {
+        id: contextMenu
+        objectName: "contextMenuWindow"
+        visible: false
+        flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        color: "transparent"
+
+        width: Screen.width
+        height: Screen.height
+
+        // real logical size, see the launcher's note on fractional scales
+        readonly property real trueWidth: width
+        readonly property real trueHeight: Screen.height * width / Screen.width
+
+        property int windowId: -1
+
+        function openFor(id, anchor) {
+            windowId = id
+            // Windows-style jump-list placement: above the icon, horizontally
+            // centered on it (below the icon when the bar sits at the top).
+            // Coordinates are in this overlay's (global) space: the bar spans
+            // the full width; at the bottom its top edge sits
+            // (trueHeight - win.height) logical px from the screen top.
+            var p = anchor.mapToItem(win.contentItem, 0, 0)
+            menuPanel.x = Math.round(p.x + (anchor.width - menuPanel.width) / 2)
+            var gy = (barCfgAtTop ? 0 : contextMenu.trueHeight - win.height) + p.y
+            menuPanel.y = barCfgAtTop
+                          ? Math.round(gy + anchor.height + 6)
+                          : Math.round(gy - menuPanel.height - 6)
+            // keep the panel fully on screen
+            menuPanel.x = Math.max(4, Math.min(menuPanel.x,
+                contextMenu.trueWidth - menuPanel.width - 4))
+            menuPanel.y = Math.max(4, Math.min(menuPanel.y,
+                contextMenu.trueHeight - menuPanel.height - 4))
+            // Win11-style pop-in
+            menuPanel.opacity = 0
+            menuPanel.scale = 0.95
+            contextMenu.visible = true
+            menuAnim.start()
+        }
+        function closeMenu() { visible = false }
+
+        // click-catcher: any click outside the panel closes the menu
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onClicked: contextMenu.closeMenu()
+        }
+
+        ParallelAnimation {
+            id: menuAnim
+            NumberAnimation { target: menuPanel; property: "opacity"; to: 1; duration: 140; easing.type: Easing.OutCubic }
+            NumberAnimation { target: menuPanel; property: "scale"; to: 1; duration: 140; easing.type: Easing.OutCubic }
+        }
+
+        // Win11-style context menu panel
+        Rectangle {
+            id: menuPanel
+            width: 150
+            height: 3 * 34 + 2 * 2 + 8      // 3 items × 34 + spacing + margins
+            radius: 8
+            color: Qt.rgba(barCfgBarColor.r, barCfgBarColor.g, barCfgBarColor.b, 0.96)
+            border.color: "#55666666"
+            border.width: 1
+            opacity: 0
+            scale: 0.95
+
+            Column {
+                anchors.fill: parent
+                anchors.margins: 4
+                spacing: 2
+
+                Repeater {
+                    model: [
+                        { text: qsTr("关闭"), act: "close" },
+                        { text: qsTr("最大化"), act: "max" },
+                        { text: qsTr("最小化"), act: "min" }
+                    ]
+                    delegate: Rectangle {
+                        width: menuPanel.width - 8
+                        height: 34
+                        radius: 5
+                        color: menuItemMouse.containsMouse ? "#26ffffff" : "transparent"
+                        Text {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: modelData.text
+                            color: "#ffffff"
+                            font.pixelSize: 13
+                        }
+                        MouseArea {
+                            id: menuItemMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onClicked: {
+                                var id = contextMenu.windowId
+                                contextMenu.closeMenu()
+                                if (modelData.act === "close")
+                                    bar.closeWindow(id)
+                                else if (modelData.act === "max")
+                                    bar.maximizeWindow(id)
+                                else
+                                    bar.minimizeWindow(id)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -420,14 +548,25 @@ Window {
     // ---------------------------------------------------------------- helpers
     function openLauncher() {
         desktopApps.reload()              // pick up newly installed apps
+        contextMenu.closeMenu()
         launcher.hadFocus = false
         launcher.visible = true
         launcher.requestActivate()
     }
     function closeLauncher() {
+        // Reset hadFocus too: Qt may deliver the deactivate event caused by
+        // this hide AFTER the user reopens the launcher, and a stale
+        // hadFocus=true would make onActiveChanged close it again right away
+        // (the "click twice to reopen" bug).
+        launcher.hadFocus = false
         launcher.visible = false
     }
 
     // hide the launcher together with the bar (e.g. a window went fullscreen)
-    onVisibleChanged: if (!visible) closeLauncher()
+    onVisibleChanged: {
+        if (!visible) {
+            closeLauncher()
+            contextMenu.closeMenu()
+        }
+    }
 }

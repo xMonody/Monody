@@ -48,6 +48,7 @@ qt_add_resources(monodybar "qml"
     PREFIX "/"
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
     FILES qml/main.qml
+          qml/LiquidGlass.qml
           win.png
 )
 

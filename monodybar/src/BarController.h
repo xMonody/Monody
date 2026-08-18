@@ -55,6 +55,10 @@ private:
  *
  * Clicking a taskbar icon sends back:
  *   {"action":"focus_window","id":1}
+ * The context menu adds:
+ *   {"action":"close_window","id":1}
+ *   {"action":"maximize_window","id":1}   (compositor toggles)
+ *   {"action":"minimize_window","id":1}
  *
  * Right after connecting the bar also sends:
  *   {"action":"list_windows"}    (asks for a fresh snapshot incl. focused_id
@@ -96,6 +100,11 @@ public:
     /** Send the activation JSON for the window with the given id. */
     Q_INVOKABLE void activateWindow(int id);
 
+    /** Context-menu window actions (close / maximize-toggle / minimize). */
+    Q_INVOKABLE void closeWindow(int id);
+    Q_INVOKABLE void maximizeWindow(int id);
+    Q_INVOKABLE void minimizeWindow(int id);
+
     /**
      * Launch a process from a .desktop Exec line (field codes are stripped,
      * quoting/expansion follows the desktop spec via /bin/sh).
@@ -119,6 +128,7 @@ private slots:
     void tryConnect();
 
 private:
+    void sendWindowAction(int id, const char *action);
     void handleLine(const QByteArray &line);
     void extractMessages();
     void processMessage(const QJsonObject &msg);

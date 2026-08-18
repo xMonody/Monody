@@ -63,12 +63,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgRadius"), barCfg::radius);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgOpacity"), barCfg::opacity);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgBarColor"), barCfg::barColor);
-    engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBgEnabled"), barCfg::activeBgEnabled);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBg"), barCfg::activeBg);
-    engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderlineWidth"), barCfg::underlineWidth);
-    engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderlineHeight"), barCfg::underlineHeight);
-    engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderlineOffset"), barCfg::underlineOffset);
-    engine.rootContext()->setContextProperty(QStringLiteral("barCfgUnderline"), barCfg::underlineColor);
     engine.load(QUrl(QStringLiteral("qrc:/qml/main.qml")));
     if (engine.rootObjects().isEmpty())
         return -1;
@@ -117,6 +112,25 @@ int main(int argc, char *argv[])
         }
     } else {
         qWarning() << "launcher window not found";
+    }
+
+    // The task-icon context menu is a second full-screen overlay; it owns
+    // the whole screen while open so any click outside the panel (handled in
+    // QML) closes it, and it can render outside the bar's small surface.
+    if (auto *menuWin = engine.rootObjects().first()->findChild<QQuickWindow *>(QStringLiteral("contextMenuWindow"))) {
+        if (auto *shell = LayerShellQt::Window::get(menuWin)) {
+            shell->setLayer(LayerShellQt::Window::LayerOverlay);
+            shell->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop
+                                                            | LayerShellQt::Window::AnchorBottom
+                                                            | LayerShellQt::Window::AnchorLeft
+                                                            | LayerShellQt::Window::AnchorRight));
+            shell->setMargins(QMargins(0, 0, 0, 0));
+            shell->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
+            shell->setExclusiveZone(0);
+            shell->setScope(QStringLiteral("monodybar-context-menu"));
+        }
+    } else {
+        qWarning() << "context menu window not found";
     }
 
     controller.start();
