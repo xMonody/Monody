@@ -287,6 +287,19 @@ void BarController::processMessage(const QJsonObject &msg)
                 m_fullscreenWindows.insert(id);
             updateFullscreenBar();
         }
+    } else if (event == QLatin1String("keyboard_layout")) {
+        // The compositor may send a short name ("us") or a descriptive one
+        // ("English (US)"); show only the short code (US, UK, DE, ...).
+        QString layout = msg.value(QStringLiteral("layout")).toString().trimmed();
+        const int open = layout.indexOf(QLatin1Char('('));
+        const int close = layout.indexOf(QLatin1Char(')'));
+        if (open >= 0 && close > open)
+            layout = layout.mid(open + 1, close - open - 1);
+        layout = layout.toUpper();
+        if (!layout.isEmpty() && m_keyboardLayout != layout) {
+            m_keyboardLayout = layout;
+            emit keyboardLayoutChanged();
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 #include "IconFinder.h"
 
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QSettings>
 #include <QSet>
@@ -73,6 +74,24 @@ QString checkFile(const QString &base)
     return {};
 }
 
+/** Find <candidate>.<ext> anywhere under a theme root (status/, devices/,
+ *  symbolic/, ...) - symbolic tray icons like fcitx5's
+ *  input-keyboard-symbolic live outside the apps/ directories. */
+QString findIconRecursive(const QString &root, const QString &candidate)
+{
+    static const char *const extensions[] = {"svg", "svgz", "png", "xpm"};
+    QStringList nameFilters;
+    for (const char *ext : extensions)
+        nameFilters << candidate + QLatin1Char('.') + QLatin1String(ext);
+
+    QDirIterator it(root, nameFilters, QDir::Files, QDirIterator::Subdirectories);
+    if (it.hasNext()) {
+        it.next();
+        return QUrl::fromLocalFile(it.filePath()).toString();
+    }
+    return {};
+}
+
 QString findIconInThemeDirs(const QString &candidate)
 {
     // Preferred icon sizes, largest first (Qt will downscale). 512 is in
@@ -112,6 +131,13 @@ QString findIconInThemeDirs(const QString &candidate)
             if (const QString found = checkFile(base.filePath(QStringLiteral("%1/scalable/apps/%2").arg(theme, candidate))); !found.isEmpty())
                 return found;
         }
+    }
+
+    // Fallback: any theme subdirectory (status/, devices/, symbolic/, ...),
+    // used by tray/status icons that are not application icons.
+    for (const QString &root : themeRoots) {
+        if (const QString found = findIconRecursive(root, candidate); !found.isEmpty())
+            return found;
     }
     return {};
 }

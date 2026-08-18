@@ -1,4 +1,5 @@
 #include <QCommandLineParser>
+#include <QDBusMetaType>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -8,6 +9,10 @@
 #include "BarController.h"
 #include "DesktopApps.h"
 #include "IconProvider.h"
+#include "TrayIconProvider.h"
+#include "TrayItem.h"
+#include "TrayModel.h"
+#include "TrayWatcher.h"
 #include "LayerShellQt/shell.h"
 #include "LayerShellQt/window.h"
 
@@ -31,6 +36,11 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("monodybar"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0"));
 
+    // Register the SNI IconPixmap type (a(iiay)) up front so every DBus
+    // property read can demarshal it without warning.
+    qDBusRegisterMetaType<TrayPixmapEntry>();
+    qDBusRegisterMetaType<TrayPixmapList>();
+
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Qt6 floating taskbar using wlr-layer-shell"));
     parser.addHelpOption();
@@ -51,9 +61,18 @@ int main(int argc, char *argv[])
 
     DesktopAppsModel desktopApps;
 
+    // System tray (StatusNotifier host): apps like fcitx5, QQ and WeChat
+    // register their tray icon here.
+    TrayWatcher trayWatcher;
+    TrayModel trayModel;
+    trayModel.setWatcher(&trayWatcher);
+    trayWatcher.registerService();
+
     QQmlApplicationEngine engine;
     engine.addImageProvider(QStringLiteral("icons"), new IconProvider);
+    engine.addImageProvider(QStringLiteral("trayicons"), new TrayIconProvider(&trayModel));
     engine.rootContext()->setContextProperty(QStringLiteral("bar"), &controller);
+    engine.rootContext()->setContextProperty(QStringLiteral("trayModel"), &trayModel);
     engine.rootContext()->setContextProperty(QStringLiteral("barHeight"), barCfg::height);
     engine.rootContext()->setContextProperty(QStringLiteral("desktopApps"), &desktopApps);
 

@@ -17,4 +17,8 @@ void ipc_server_destroy(struct server *server);
 void ipc_send_window_event(struct server *server, const char *event,
 	struct toplevel *tl);
 
+/* send the active keyboard layout (xkb layout name); target NULL broadcasts */
+void ipc_send_keyboard_layout(struct server *server,
+	struct ipc_client *target);
+
 #endif /* XMONODYWM_IPC_H */

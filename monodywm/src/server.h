@@ -527,6 +527,10 @@ struct keyboard {
 	struct wlr_keyboard *keyboard;
 	struct wl_list link; /* server.keyboards */
 
+	/* active xkb layout group index, to detect layout switches and tell
+	 * the status bar (its keyboard-layout fallback indicator) */
+	uint32_t last_layout;
+
 	struct wl_listener key;
 	struct wl_listener modifiers;
 	struct wl_listener destroy;

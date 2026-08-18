@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Qml Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Qml Network DBus)
 
 qt_standard_project_setup()
 
@@ -22,6 +22,14 @@ qt_add_executable(monodybar
     src/IconFinder.h
     src/IconProvider.cpp
     src/IconProvider.h
+    src/TrayIconProvider.cpp
+    src/TrayIconProvider.h
+    src/TrayItem.cpp
+    src/TrayItem.h
+    src/TrayModel.cpp
+    src/TrayModel.h
+    src/TrayWatcher.cpp
+    src/TrayWatcher.h
 )
 
 target_include_directories(monodybar PRIVATE
@@ -41,6 +49,7 @@ target_link_libraries(monodybar PRIVATE
     Qt6::Quick
     Qt6::Qml
     Qt6::Network
+    Qt6::DBus
     LayerShellQt::Interface
 )
 

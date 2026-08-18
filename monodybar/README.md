@@ -25,12 +25,16 @@ Compositor → bar:
 {"event":"window_removed","id":1}                                     // remove the icon
 {"event":"window_focus","id":1}                                       // highlight the icon (id 0 clears)
 {"event":"window_full","id":3}                                        // sent once on enter AND once on exit fullscreen
+{"event":"keyboard_layout","layout":"us"}                            // active xkb layout (for the input indicator)
 ```
 
 Bar → compositor:
 
 ```json
 {"action":"focus_window","id":1}   // sent when an icon is clicked
+{"action":"close_window","id":1}    // context menu: close
+{"action":"maximize_window","id":1} // context menu: toggle maximize
+{"action":"minimize_window","id":1} // context menu: minimize
 {"action":"list_windows"}            // sent right after connecting; answer with a
                                        // fresh window_list (with focused_id) so the
                                        // focused icon shows immediately

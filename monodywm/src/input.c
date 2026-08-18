@@ -7,6 +7,7 @@
  * pointers used for testing) are attached to the shared cursor here.
  */
 
+#include "ipc.h"
 #include "server.h"
 
 #include <stdio.h>
@@ -477,6 +478,19 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 				? XKB_KEY_DOWN : XKB_KEY_UP);
 	}
 
+	/* layout group switched: tell the status bar (its keyboard-layout
+	 * fallback indicator).  Done before the grab check so a switch made
+	 * while fcitx5 holds the keyboard still gets reported. */
+	if (kb->keyboard->xkb_state != NULL && kb->keyboard->keymap != NULL) {
+		xkb_layout_index_t idx =
+			xkb_state_serialize_layout(kb->keyboard->xkb_state,
+				XKB_STATE_LAYOUT_EFFECTIVE);
+		if (idx != kb->last_layout) {
+			kb->last_layout = idx;
+			ipc_send_keyboard_layout(server, NULL);
+		}
+	}
+
 	/* keys from the keyboard the IM grabbed are forwarded to it by ime.c
 	 * and must not reach shortcuts or the focused client.  Keys from other
 	 * keyboards (e.g. fcitx5's passthrough re-injection device) pass
@@ -537,6 +551,7 @@ static void keyboard_attach(struct server *server,
 	}
 	kb->server = server;
 	kb->keyboard = keyboard;
+	kb->last_layout = UINT32_MAX; /* force a layout broadcast on first key */
 	kb->key.notify = keyboard_key;
 	wl_signal_add(&keyboard->events.key, &kb->key);
 	kb->modifiers.notify = keyboard_modifiers;
