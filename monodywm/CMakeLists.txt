@@ -23,10 +23,10 @@ pkg_check_modules(GLESV2 REQUIRED IMPORTED_TARGET glesv2)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
 # ---------------------------------------------------------------------------
-# Protocol code generation
+# protocol code generation
 #
 # Every protocol this project speaks lives as an XML description in
-# Protocol/.  wayland-scanner turns each of them into three artifacts in the
+# protocol/.  wayland-scanner turns each of them into three artifacts in the
 # build tree:
 #
 #   <name>-protocol.h          (server-side header, wlroots naming:
@@ -64,6 +64,7 @@ set(PROTOCOLS
 	xdg-activation-v1
 	wp_fractional_scale_v1
 	linux-drm-syncobj-v1
+	wlr-screencopy-unstable-v1
 )
 
 set(PROTOCOL_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/protocol)
@@ -72,7 +73,7 @@ file(MAKE_DIRECTORY ${PROTOCOL_GEN_DIR})
 # generates the three artifacts for one protocol xml file; appends their
 # paths to the given output variables
 function(wayland_generate name)
-	set(xml ${CMAKE_CURRENT_SOURCE_DIR}/Protocol/${name}.xml)
+	set(xml ${CMAKE_CURRENT_SOURCE_DIR}/protocol/${name}.xml)
 	set(prefix ${PROTOCOL_GEN_DIR}/${name})
 
 	add_custom_command(

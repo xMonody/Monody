@@ -9,7 +9,6 @@ Mock compositor for testing xmonodybar, following the xmonodywm IPC protocol:
     {"event":"window_removed","id":1}
     {"event":"window_focus","id":1}          id 0 clears
     {"event":"window_full","id":1}           enter AND exit
-    {"event":"keyboard_layout","layout":"us"}  active xkb layout name
 
   bar -> compositor:
     {"action":"focus_window","id":1}

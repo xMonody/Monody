@@ -72,7 +72,6 @@ class BarController : public QObject
     Q_PROPERTY(int focusedId READ focusedId NOTIFY focusedIdChanged)
     Q_PROPERTY(bool barVisible READ barVisible NOTIFY barVisibleChanged)
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
-    Q_PROPERTY(QString keyboardLayout READ keyboardLayout NOTIFY keyboardLayoutChanged)
     Q_PROPERTY(bool debugMode READ debugMode WRITE setDebugMode NOTIFY debugModeChanged)
     Q_PROPERTY(QString lastEvent READ lastEvent NOTIFY lastEventChanged)
     Q_PROPERTY(int eventsProcessed READ eventsProcessed NOTIFY eventsProcessedChanged)
@@ -85,7 +84,6 @@ public:
     int focusedId() const { return m_focusedId; }
     bool barVisible() const { return m_barVisible; }
     bool connected() const { return m_connected; }
-    QString keyboardLayout() const { return m_keyboardLayout; }
     bool debugMode() const { return m_debugMode; }
     void setDebugMode(bool on);
     QString lastEvent() const { return m_lastEvent; }
@@ -118,7 +116,6 @@ signals:
     void focusedIdChanged();
     void barVisibleChanged();
     void connectedChanged();
-    void keyboardLayoutChanged();
     void debugModeChanged();
     void lastEventChanged();
     void eventsProcessedChanged();
@@ -145,7 +142,6 @@ private:
     int m_focusedId = -1;
     bool m_barVisible = true;
     bool m_connected = false;
-    QString m_keyboardLayout = QStringLiteral("US");
     bool m_debugMode = false;
     QString m_lastEvent;
     int m_eventsProcessed = 0;

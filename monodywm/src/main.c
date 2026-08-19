@@ -42,6 +42,7 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
+#include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_shm.h>
 
 #include <wlr/types/wlr_scene.h>
@@ -316,6 +317,17 @@ int main(int argc, char *argv[]) {
 		wlr_xdg_decoration_manager_v1_create(server.display);
 	struct wlr_virtual_pointer_manager_v1 *virtual_pointer_manager =
 		wlr_virtual_pointer_manager_v1_create(server.display);
+
+	/* wlr-screencopy-v1: screen capture for grim/slurp/wf-recorder.
+	 * wlroots implements the whole protocol server-side (frame capture,
+	 * damage, cursor overlay), the compositor only registers the global.
+	 * Kept in favor of ext-image-copy-capture-v1: it is what the capture
+	 * tools expect today and works with the bundled DMABUF/SHM paths. */
+	struct wlr_screencopy_manager_v1 *screencopy_manager =
+		wlr_screencopy_manager_v1_create(server.display);
+	if (screencopy_manager == NULL) {
+		wlr_log(WLR_ERROR, "failed to create wlr-screencopy-v1 global");
+	}
 
 	/* cursor-shape-v1: clients pick a shape, the compositor renders it from
 	 * its own xcursor theme at the output's (fractional) scale, so the

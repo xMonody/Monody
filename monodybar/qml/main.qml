@@ -189,32 +189,6 @@ Window {
             Layout.preferredHeight: barHeight
         }
 
-        // ---- keyboard layout fallback (no tray items, e.g. fcitx5 absent) ----
-        //      Windows-style input indicator: shows the active layout name.
-        Item {
-            implicitWidth: layoutText.implicitWidth + 16
-            Layout.preferredHeight: barHeight
-            visible: trayModel.count === 0
-
-            LiquidGlass {
-                anchors.centerIn: parent
-                hovered: layoutMouse.containsMouse
-            }
-            Text {
-                id: layoutText
-                anchors.centerIn: parent
-                text: bar.keyboardLayout.toUpperCase()
-                color: "#d7dbe8"
-                font.pixelSize: 12
-                font.bold: true
-            }
-            MouseArea {
-                id: layoutMouse
-                anchors.fill: parent
-                hoverEnabled: true
-            }
-        }
-
         // ---- system tray (StatusNotifier items: fcitx5, QQ, WeChat ...) ----
         Row {
             Layout.preferredHeight: barHeight

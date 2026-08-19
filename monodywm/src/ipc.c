@@ -6,8 +6,7 @@
  * JSON messages; each window is identified by a stable id.
  *
  * Events broadcast to every client: window_added, window_removed,
- * window_focus (id 0 = nothing focused), window_full, window_list,
- * keyboard_layout {"layout": "us"} (the active xkb layout name).
+ * window_focus (id 0 = nothing focused), window_full, window_list.
  * Client requests (one JSON object per line): list_windows,
  * focus_window {"id": N}, close_window {"id": N},
  * maximize_window {"id": N} (toggles), minimize_window {"id": N}.
@@ -27,8 +26,6 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include <xkbcommon/xkbcommon.h>
-#include <wlr/types/wlr_seat.h>
 #include <wlr/util/log.h>
 
 /* one connected status bar client; JSON messages are newline-delimited */
@@ -250,7 +247,6 @@ static int ipc_handle_accept(int fd, uint32_t mask, void *data) {
 	wl_list_insert(server->ipc_clients.prev, &client->link);
 	/* a fresh client needs the current window list to draw the bar */
 	ipc_send_window_list(server, client);
-	ipc_send_keyboard_layout(server, client);
 	return 0;
 }
 
@@ -276,42 +272,6 @@ void ipc_send_window_event(struct server *server, const char *event,
 		struct ipc_client *client;
 		wl_list_for_each(client, &server->ipc_clients, link) {
 			ipc_client_queue(client, json);
-		}
-		free(json);
-	}
-	cJSON_Delete(root);
-}
-
-/* send the active keyboard layout (xkb layout name); target NULL broadcasts */
-void ipc_send_keyboard_layout(struct server *server,
-		struct ipc_client *target) {
-	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
-	if (keyboard == NULL || keyboard->xkb_state == NULL ||
-			keyboard->keymap == NULL) {
-		return;
-	}
-	xkb_layout_index_t idx =
-		xkb_state_serialize_layout(keyboard->xkb_state,
-			XKB_STATE_LAYOUT_EFFECTIVE);
-	const char *name = xkb_keymap_layout_get_name(keyboard->keymap, idx);
-	if (name == NULL) {
-		name = "us";
-	}
-	cJSON *root = cJSON_CreateObject();
-	if (root == NULL) {
-		return;
-	}
-	cJSON_AddStringToObject(root, "event", "keyboard_layout");
-	cJSON_AddStringToObject(root, "layout", name);
-	char *json = cJSON_PrintUnformatted(root);
-	if (json != NULL) {
-		if (target != NULL) {
-			ipc_client_queue(target, json);
-		} else {
-			struct ipc_client *client;
-			wl_list_for_each(client, &server->ipc_clients, link) {
-				ipc_client_queue(client, json);
-			}
 		}
 		free(json);
 	}

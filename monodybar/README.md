@@ -25,7 +25,6 @@ Compositor → bar:
 {"event":"window_removed","id":1}                                     // remove the icon
 {"event":"window_focus","id":1}                                       // highlight the icon (id 0 clears)
 {"event":"window_full","id":3}                                        // sent once on enter AND once on exit fullscreen
-{"event":"keyboard_layout","layout":"us"}                            // active xkb layout (for the input indicator)
 ```
 
 Bar → compositor:
