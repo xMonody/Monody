@@ -6,7 +6,7 @@
 struct DesktopApp
 {
     QString name;   // localized display name
-    QString icon;   // resolved icon URL (file://...) or empty
+    QString icon;   // image://icons/<resolved absolute icon path> or empty
     QString exec;   // raw Exec line from the .desktop file
 };
 

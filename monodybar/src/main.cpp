@@ -8,6 +8,7 @@
 #include "BarConfig.h"
 #include "BarController.h"
 #include "DesktopApps.h"
+#include "IconIndex.h"
 #include "IconProvider.h"
 #include "NotificationDaemon.h"
 #include "TrayIconProvider.h"
@@ -59,6 +60,10 @@ int main(int argc, char *argv[])
     controller.setSocketPath(parser.value(socketOption));
     controller.setDebugMode(qEnvironmentVariableIsSet("BAR_DEBUG"));
 
+    // Build the one-time icon index (XDG .desktop files + icon themes) before
+    // anything draws: afterwards every icon lookup is a plain hash lookup.
+    IconIndex::init();
+
     DesktopAppsModel desktopApps;
 
     // System tray (StatusNotifier host): apps like fcitx5, QQ and WeChat
@@ -90,6 +95,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgOpacity"), barCfg::opacity);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgBarColor"), barCfg::barColor);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBg"), barCfg::activeBg);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgMenuBg"), barCfg::menuBg);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBorder"), barCfg::activeBorder);
     engine.load(QUrl(QStringLiteral("qrc:/qml/main.qml")));
     if (engine.rootObjects().isEmpty())
         return -1;

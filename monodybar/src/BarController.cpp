@@ -1,6 +1,6 @@
 #include "BarController.h"
 
-#include "IconFinder.h"
+#include "IconIndex.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -380,7 +380,6 @@ void BarController::launchApp(const QString &execLine)
 
 QString BarController::findIcon(const QString &appId) const
 {
-    // Full app_id lookup: direct name match first, then the .desktop-file
-    // fallback (file basename / StartupWMClass / Name -> Icon=).
-    return IconFinder::findForAppId(appId);
+    // The icon index was built once at startup; drawing is a hash lookup.
+    return IconIndex::iconForAppId(appId);
 }

@@ -1,8 +1,7 @@
 #include "IconProvider.h"
 
-#include "IconFinder.h"
+#include "IconIndex.h"
 
-#include <QDir>
 #include <QImageReader>
 #include <QLibrary>
 #include <QUrl>
@@ -141,18 +140,12 @@ QImage IconProvider::load(const QString &key, const QSize &requestedSize)
     if (it != m_cache.constEnd())
         return it.value();
 
-    // Resolve the icon: an app_id may need the .desktop-file fallback
-    // (StartupWMClass / file basename -> Icon=), absolute paths are used
-    // as-is.
-    const QString found = key.startsWith(QLatin1Char('/')) ? key : IconFinder::findForAppId(key);
-    if (found.isEmpty())
+    // The icon index was built once at startup; drawing is a plain hash
+    // lookup. Absolute paths (launcher icons already resolved at index time)
+    // pass through directly.
+    const QString path = key.startsWith(QLatin1Char('/')) ? key : IconIndex::iconForAppId(key);
+    if (path.isEmpty())
         return {};
-
-    // IconFinder returns file:// URLs; gdk-pixbuf needs a plain path.
-    QString path = found;
-    const QUrl url(found);
-    if (url.isLocalFile())
-        path = url.toLocalFile();
 
     QImage img;
     const QString lower = path.toLower();

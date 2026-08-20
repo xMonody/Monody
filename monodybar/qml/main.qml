@@ -105,7 +105,7 @@ Window {
                 readonly property bool focused: model.id === bar.focusedId
 
                 // Liquid-glass focus/hover background (shared component):
-                // translucent tint + specular sheen + fine noise + light edge.
+                // translucent tint + light edge.
                 // Same size in every state; only the tint depth changes.
                 LiquidGlass {
                     id: taskBg
@@ -118,10 +118,9 @@ Window {
                 // SVG icons survive Qt's weak built-in SVG renderer)
                 Image {
                     id: iconImage
-                    width: 24
-                    height: 24
+                    width: 29
+                    height: 29
                     anchors.centerIn: parent
-                    anchors.verticalCenterOffset: -2
                     source: "image://icons/" + encodeURIComponent(model.appId)
                     sourceSize: Qt.size(64, 64)
                     fillMode: Image.PreserveAspectFit
@@ -138,10 +137,9 @@ Window {
                 // fallback tile when no themed icon was found
                 Rectangle {
                     visible: iconImage.status !== Image.Ready
-                    width: 24
-                    height: 24
+                    width: 29
+                    height: 29
                     anchors.centerIn: parent
-                    anchors.verticalCenterOffset: -2
                     radius: 5
                     color: taskbarColor.hash(model.appId)
 
@@ -201,20 +199,28 @@ Window {
                     width: 32
                     height: barHeight
 
+                    // hover background: same pill as the app icons
                     LiquidGlass {
                         anchors.centerIn: parent
-                        lit: trayMouse.containsMouse        // stronger hover feedback
+                        size: 28
                         hovered: trayMouse.containsMouse
                     }
                     Image {
                         id: trayIcon
                         anchors.centerIn: parent
-                        width: 24
-                        height: 24
+                        width: 19
+                        height: 19
                         source: model.icon
                         sourceSize: Qt.size(48, 48)
                         fillMode: Image.PreserveAspectFit
                         smooth: true
+
+                        // shrink 3 px while pressed (19 -> 16), spring back
+                        // on release
+                        scale: trayMouse.pressed ? 16.0 / 19.0 : 1.0
+                        Behavior on scale {
+                            NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                        }
 
                         // Message notification: gentle 1 Hz blink while the
                         // item wants attention (brief dim, mostly bright).
@@ -266,10 +272,12 @@ Window {
             implicitWidth: clockRow.implicitWidth + 20
             Layout.preferredHeight: barHeight
 
-            Rectangle {                        // hover feedback, same as icons
-                anchors.fill: parent
-                radius: 4
-                color: clockMouse.containsMouse ? "#26ffffff" : "transparent"
+            LiquidGlass {                      // hover feedback: same pill as app icons
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                height: 36
+                hovered: clockMouse.containsMouse
             }
             Column {
                 id: clockRow
@@ -384,7 +392,7 @@ Window {
             width: 150
             height: 3 * 34 + 2 * 2 + 8      // 3 items × 34 + spacing + margins
             radius: 8
-            color: Qt.rgba(barCfgBarColor.r, barCfgBarColor.g, barCfgBarColor.b, 0.96)
+            color: Qt.rgba(barCfgMenuBg.r, barCfgMenuBg.g, barCfgMenuBg.b, barCfgMenuBg.a)
             border.color: "#55666666"
             border.width: 1
             opacity: 0
@@ -405,7 +413,7 @@ Window {
                         width: menuPanel.width - 8
                         height: 34
                         radius: 5
-                        color: menuItemMouse.containsMouse ? "#26ffffff" : "transparent"
+                        color: menuItemMouse.containsMouse ? Qt.rgba(barCfgActiveBg.r, barCfgActiveBg.g, barCfgActiveBg.b, barCfgActiveBg.a) : "transparent"
                         Text {
                             anchors.left: parent.left
                             anchors.leftMargin: 10
@@ -447,10 +455,11 @@ Window {
             trayShowItems(trayModel.menuItems(index, 0))
             var p = anchor.mapToItem(win.contentItem, 0, 0)
             trayMenuPanel.x = Math.round(p.x + (anchor.width - trayMenuPanel.width) / 2)
-            var gy = (barCfgAtTop ? 0 : contextMenu.trueHeight - win.height) + p.y
+            // same vertical placement as the launcher (win) popup: keep a
+            // 6 px gap from the bar so the menu never lands on the bar
             trayMenuPanel.y = barCfgAtTop
-                          ? Math.round(gy + anchor.height + 6)
-                          : Math.round(gy - trayMenuPanel.height - 6)
+                          ? Math.round(win.height + 6)
+                          : Math.round(contextMenu.trueHeight - win.height - trayMenuPanel.height - 6)
             trayMenuPanel.x = Math.max(4, Math.min(trayMenuPanel.x,
                 contextMenu.trueWidth - trayMenuPanel.width - 4))
             trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
@@ -500,7 +509,7 @@ Window {
             width: 180
             height: trayListModel.count * 34 + 2 * Math.max(0, trayListModel.count - 1) + 8
             radius: 8
-            color: Qt.rgba(barCfgBarColor.r, barCfgBarColor.g, barCfgBarColor.b, 0.96)
+            color: Qt.rgba(barCfgMenuBg.r, barCfgMenuBg.g, barCfgMenuBg.b, barCfgMenuBg.a)
             border.color: "#55666666"
             border.width: 1
             opacity: 0
@@ -532,7 +541,7 @@ Window {
                             visible: model.type !== "separator"
                             anchors.fill: parent
                             radius: 5
-                            color: trayItemMouse.containsMouse && model.enabled ? "#26ffffff" : "transparent"
+                            color: trayItemMouse.containsMouse && model.enabled ? Qt.rgba(barCfgActiveBg.r, barCfgActiveBg.g, barCfgActiveBg.b, barCfgActiveBg.a) : "transparent"
                         }
                         Text {
                             visible: model.type !== "separator"
@@ -618,7 +627,7 @@ Window {
             onClicked: closeLauncher()
         }
 
-        Rectangle {                          // panel chrome: same bg as the taskbar
+        Rectangle {                          // panel chrome: same bg as the popup menus (menuBg)
             // x follows the bar's left edge (bar is centred when fixed-width)
             x: (launcher.trueWidth - win.width) / 2 + 6
             // below the bar when at top, above it when at the bottom
@@ -626,7 +635,7 @@ Window {
             width: launcher.launcherCols * launcher.launcherCellW + 2 * launcher.launcherPad
             height: launcher.launcherRows * launcher.launcherCellH + 2 * launcher.launcherPad
             radius: win.barRadius
-            color: Qt.rgba(barCfgBarColor.r, barCfgBarColor.g, barCfgBarColor.b, barCfgOpacity)
+            color: Qt.rgba(barCfgMenuBg.r, barCfgMenuBg.g, barCfgMenuBg.b, barCfgMenuBg.a)
             border.color: "#55666666"
             border.width: 1
 

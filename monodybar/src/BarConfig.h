@@ -25,12 +25,19 @@ inline constexpr int radius = 10;
 
 // 状态栏透明度, 0.0 = 全透明, 1.0 = 不透明
 // (叠加在 barColor 之上, barColor 自带的 alpha 会被忽略)
-inline constexpr qreal opacity = 0.9;
+inline constexpr qreal opacity = 0.95;
 
 // 状态栏背景色 (RGB)
-inline const QColor barColor = QColor(0x20, 0x20, 0x20);
+inline const QColor barColor = QColor(0x1e, 0x1e, 0x2e); //#1E1E2E
 
-// 活动 (聚焦) 窗口图标的背景色
-inline const QColor activeBg = QColor(0x4d, 0x4d, 0x4d, 0x59);
+// 最后一个字节是透明度: 0x1a ≈ 10% (半透明), 0x00 = 全透明。
+inline const QColor activeBg = QColor(0xff, 0xff, 0xff, 0x10);
+
+// 弹框 (右键菜单) 背景色: 最后一个字节是透明度 (0xf5 ≈ 96%)。
+inline const QColor menuBg = QColor(0x30, 0x34, 0x46, 0xf5);
+
+// 活动 (聚焦) 窗口图标背景的边框宽度 (像素), 0 = 不画边框。
+// 边框颜色/透明度跟随 activeBg 上面的白色 (见 LiquidGlass.qml)。
+inline constexpr int activeBorder = 0;
 
 } // namespace barCfg

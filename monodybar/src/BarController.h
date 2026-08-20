@@ -94,7 +94,7 @@ public:
     /** Connect to the compositor socket (retries automatically). */
     void start();
 
-    /** Locate a themed icon for an app_id, returns a file:// URL or empty. */
+    /** Locate the icon for an app_id: absolute icon path or empty (hash lookup). */
     Q_INVOKABLE QString findIcon(const QString &appId) const;
 
     /** Send the activation JSON for the window with the given id. */

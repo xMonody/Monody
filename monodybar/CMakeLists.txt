@@ -18,8 +18,8 @@ qt_add_executable(monodybar
     src/BarController.h
     src/DesktopApps.cpp
     src/DesktopApps.h
-    src/IconFinder.cpp
-    src/IconFinder.h
+    src/IconIndex.cpp
+    src/IconIndex.h
     src/IconProvider.cpp
     src/IconProvider.h
     src/NotificationDaemon.cpp

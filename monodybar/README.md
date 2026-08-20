@@ -49,20 +49,28 @@ second if the compositor restarts (a fresh `window_list` is then applied).
 
 ## Icons
 
-For a given `app_id` the bar searches, in order:
+When the bar starts it scans the XDG `.desktop` files and the icon themes
+**once** and keeps the results in memory as plain hash lookups, so drawing
+an icon never touches the filesystem again:
 
-1. `$XDG_DATA_HOME/icons` (default `~/.local/share/icons`) and `/usr/share/icons`
-   - `hicolor/<size>/apps/<app_id>.{png,svg,svgz,xpm}` for sizes 256…16
-   - `hicolor/scalable/apps/<app_id>.*`
-   - every other theme, same layout
-2. `/usr/share/pixmaps/<app_id>.*` and `$XDG_DATA_HOME/pixmaps/<app_id>.*`
+- `Exec=` first token → icon path
+- desktop file id / `StartupWMClass` / `Name` → icon path (used for the
+  taskbar `app_id`s, e.g. Qt Creator's `qtcreator` finds its icon stored as
+  `QtProject-qtcreator.png`)
+- themed icon name → icon path (tray / attention icons)
 
-Common spelling variants are tried too (lowercase, `-` → `_`). If the app_id
-still matches nothing, the bar falls back to the `.desktop` files: an app_id
-that equals a desktop file's basename, `StartupWMClass` or `Name` uses that
-file's `Icon=` value (so e.g. Qt Creator's app_id `qtcreator` finds its icon
-stored as `QtProject-qtcreator.png`).
-If nothing is found a colored tile with the app's initial is drawn instead.
+`Icon=` values are resolved against the icon themes in this order:
+`$XDG_DATA_HOME/icons` (default `~/.local/share/icons`) first, then
+`/usr/share/icons`, then `/usr/local/share/icons` (the flat pixmap dirs are a
+last resort). Within a theme larger sizes win, then `scalable`/`symbolic`
+dirs, and common spelling variants are tried too (lowercase, `-` → `_`).
+The user theme's definitions win over the system themes' defaults: its real
+SVG icons and its symlink aliases alike - e.g. WhiteSur's
+`links/apps/scalable/nvim.svg → neovim.svg` resolves `nvim` to WhiteSur's
+`neovim.svg`, `vim`/`gvim` to `vim.svg`, `foot` to `terminal.svg`. The themed
+icon name is preferred over the `.desktop` `Icon=` mapping, which is only a
+fallback. If nothing is found a colored tile with the app's initial is
+drawn instead.
 
 Icons are served to QML through an `image://icons/...` image provider
 (`IconProvider`). SVG files are rendered with **librsvg via gdk-pixbuf**
@@ -126,9 +134,9 @@ in the terminal.
 
 ```
 src/main.cpp            layer-shell setup (top layer, anchors, exclusive zone)
-src/BarController.cpp   socket client, window model, icon lookup
-src/IconFinder.cpp      XDG icon-theme lookup (returns file:// URLs)
-src/IconProvider.cpp    image://icons provider; SVG rendering via gdk-pixbuf
+src/BarController.cpp   socket client, window model
+src/IconIndex.cpp      one-time icon index (exec/app_id/name -> icon path)
+src/IconProvider.cpp   image://icons provider; SVG rendering via gdk-pixbuf
 qml/main.qml            taskbar UI (Win11 style)
 scripts/mock_compositor.py
 ```
