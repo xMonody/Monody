@@ -54,7 +54,7 @@ Window {
         anchors.verticalCenter: parent.verticalCenter   // centre the 40px row in the bar
         anchors.leftMargin: 6
         anchors.rightMargin: 6
-        spacing: 10
+        spacing: barCfgAppGap        // distance between two app icons
 
         // ---- left icon: Windows-like logo, no function for now ----
         Item {
@@ -90,8 +90,9 @@ Window {
             }
         }
 
-        // ---- gap: win icon stays two app-gap widths away from the apps ----
-        Item { width: 10; height: barHeight }
+        // ---- gap: extra width so the win icon sits barCfgWinAppGap px from
+        //      the first app (RowLayout spacing already adds appGap per side) ----
+        Item { width: Math.max(0, barCfgWinAppGap - 2 * barCfgAppGap); height: barHeight }
 
         // ---- running windows (one icon per window) ----
         Repeater {
@@ -103,6 +104,7 @@ Window {
                 height: barHeight
 
                 readonly property bool focused: model.id === bar.focusedId
+                readonly property int iconSize: 29
 
                 // Liquid-glass focus/hover background (shared component):
                 // translucent tint + light edge.
@@ -110,6 +112,11 @@ Window {
                 LiquidGlass {
                     id: taskBg
                     anchors.centerIn: parent
+                    // focus/hover pill: barCfgFocusPad extra on each side.
+                    // Height stays fixed (36) so the pill never grows taller
+                    // than the bar and its corners never get clipped.
+                    width: taskItem.iconSize + 2 * barCfgFocusPad
+                    height: 36
                     lit: taskItem.focused
                     hovered: itemMouse.containsMouse
                 }
@@ -118,8 +125,8 @@ Window {
                 // SVG icons survive Qt's weak built-in SVG renderer)
                 Image {
                     id: iconImage
-                    width: 29
-                    height: 29
+                    width: taskItem.iconSize
+                    height: taskItem.iconSize
                     anchors.centerIn: parent
                     source: "image://icons/" + encodeURIComponent(model.appId)
                     sourceSize: Qt.size(64, 64)
@@ -137,8 +144,8 @@ Window {
                 // fallback tile when no themed icon was found
                 Rectangle {
                     visible: iconImage.status !== Image.Ready
-                    width: 29
-                    height: 29
+                    width: taskItem.iconSize
+                    height: taskItem.iconSize
                     anchors.centerIn: parent
                     radius: 5
                     color: taskbarColor.hash(model.appId)
@@ -455,15 +462,7 @@ Window {
             trayShowItems(trayModel.menuItems(index, 0))
             var p = anchor.mapToItem(win.contentItem, 0, 0)
             trayMenuPanel.x = Math.round(p.x + (anchor.width - trayMenuPanel.width) / 2)
-            // same vertical placement as the launcher (win) popup: keep a
-            // 6 px gap from the bar so the menu never lands on the bar
-            trayMenuPanel.y = barCfgAtTop
-                          ? Math.round(win.height + 6)
-                          : Math.round(contextMenu.trueHeight - win.height - trayMenuPanel.height - 6)
-            trayMenuPanel.x = Math.max(4, Math.min(trayMenuPanel.x,
-                contextMenu.trueWidth - trayMenuPanel.width - 4))
-            trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
-                contextMenu.trueHeight - trayMenuPanel.height - 4))
+            positionTrayMenu()
             trayMenuPanel.opacity = 0
             trayMenuPanel.scale = 0.95
             menuPanel.visible = false
@@ -479,11 +478,24 @@ Window {
             for (var i = 0; i < items.length; i++)
                 trayListModel.append(items[i])
         }
+        function positionTrayMenu() {
+            // Anchor to the bar edge (6 px gap) using the panel's CURRENT
+            // height, then clamp into the screen.  Must run after every
+            // content change: trayOpenSubmenu/trayGoBack change the item
+            // count, so a stale y would otherwise leave the panel over the
+            // bar or off-screen.
+            trayMenuPanel.y = barCfgAtTop
+                ? Math.round(win.height + 6)
+                : Math.round(contextMenu.trueHeight - win.height - trayMenuPanel.height - 6)
+            trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
+                contextMenu.trueHeight - trayMenuPanel.height - 4))
+            trayMenuPanel.x = Math.max(4, Math.min(trayMenuPanel.x,
+                contextMenu.trueWidth - trayMenuPanel.width - 4))
+        }
         function trayOpenSubmenu(parentId) {
             trayStack.push(parentId)
             trayShowItems(trayModel.menuItems(trayItemIndex, parentId))
-            trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
-                contextMenu.trueHeight - trayMenuPanel.height - 4))
+            positionTrayMenu()
         }
         function trayGoBack() {
             if (trayStack.length === 0)
@@ -491,8 +503,7 @@ Window {
             trayStack.pop()
             var parent = trayStack.length > 0 ? trayStack[trayStack.length - 1] : 0
             trayShowItems(trayModel.menuItems(trayItemIndex, parent))
-            trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
-                contextMenu.trueHeight - trayMenuPanel.height - 4))
+            positionTrayMenu()
         }
 
         ListModel { id: trayListModel }
@@ -568,11 +579,14 @@ Window {
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             onClicked: {
                                 if (model.type === "separator") return
-                                if (model.isBack) { contextMenu.trayGoBack(); return }
+                                if (model.id === -1 || model.isBack) { contextMenu.trayGoBack(); return }
                                 if (model.hasChildren) { contextMenu.trayOpenSubmenu(model.id); return }
                                 var idx = contextMenu.trayItemIndex
-                                contextMenu.closeMenu()
-                                trayModel.triggerMenu(idx, model.id)
+                                // close only when the item actually triggered:
+                                // a failed Event keeps the menu open so the
+                                // user can retry instead of it "dying"
+                                if (trayModel.triggerMenu(idx, model.id))
+                                    contextMenu.closeMenu()
                             }
                         }
                     }

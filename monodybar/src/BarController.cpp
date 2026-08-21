@@ -54,19 +54,28 @@ int WindowListModel::indexOf(int id) const
     return -1;
 }
 
-void WindowListModel::addWindow(int id, const QString &appId)
+void WindowListModel::addWindow(int id, const QString &appId, qint64 pid)
 {
     const int i = indexOf(id);
     if (i >= 0) {
-        if (m_items[i].appId == appId)
+        if (m_items[i].appId == appId && m_items[i].pid == pid)
             return;
         m_items[i].appId = appId;
+        m_items[i].pid = pid;
         emit dataChanged(index(i), index(i), {AppIdRole});
         return;
     }
+    // New window: always append to the end of the taskbar (creation order),
+    // regardless of how the window was launched.
     beginInsertRows(QModelIndex(), m_items.size(), m_items.size());
-    m_items.append({id, appId});
+    m_items.append({id, appId, pid});
     endInsertRows();
+}
+
+qint64 WindowListModel::pidForId(int id) const
+{
+    const int i = indexOf(id);
+    return i >= 0 ? m_items.at(i).pid : 0;
 }
 
 void WindowListModel::removeWindow(int id)
@@ -241,8 +250,9 @@ void BarController::processMessage(const QJsonObject &msg)
             const QJsonObject w = v.toObject();
             const int wid = w.value(QStringLiteral("id")).toInt(-1);
             const QString appId = w.value(QStringLiteral("app_id")).toString();
+            const qint64 pid = (qint64)w.value(QStringLiteral("pid")).toDouble();
             if (wid >= 0 && !appId.isEmpty())
-                m_windows.addWindow(wid, appId);
+                m_windows.addWindow(wid, appId, pid);
             if (w.value(QStringLiteral("focused")).toBool(false)) {
                 hasFocusInfo = true;
                 snapshotFocus = wid;
@@ -261,8 +271,9 @@ void BarController::processMessage(const QJsonObject &msg)
         }
     } else if (event == QLatin1String("window_added") || event == QLatin1String("windows_added")) {
         const QString appId = msg.value(QStringLiteral("app_id")).toString();
+        const qint64 pid = (qint64)msg.value(QStringLiteral("pid")).toDouble();
         if (id >= 0 && !appId.isEmpty())
-            m_windows.addWindow(id, appId);
+            m_windows.addWindow(id, appId, pid);
     } else if (event == QLatin1String("window_removed") || event == QLatin1String("windows_removed")) {
         m_windows.removeWindow(id);
         if (m_focusedId == id) {
@@ -276,6 +287,13 @@ void BarController::processMessage(const QJsonObject &msg)
         if (m_focusedId != id) {
             m_focusedId = id <= 0 ? -1 : id;
             emit focusedIdChanged();
+        }
+        // Focusing a window means its message was seen: clear the matching
+        // tray icon's attention blink.
+        if (id > 0) {
+            const qint64 pid = m_windows.pidForId(id);
+            if (pid > 0)
+                emit windowActivated(pid);
         }
     } else if (event == QLatin1String("window_full")) {
         // the compositor sends this once when entering fullscreen and once
@@ -327,6 +345,11 @@ void BarController::sendLine(const QByteArray &line)
 void BarController::activateWindow(int id)
 {
     sendWindowAction(id, "focus_window");
+    // Clicking a taskbar icon opens the app window: stop its tray icon
+    // blinking (the message is now "read").
+    const qint64 pid = m_windows.pidForId(id);
+    if (pid > 0)
+        emit windowActivated(pid);
 }
 
 void BarController::closeWindow(int id)

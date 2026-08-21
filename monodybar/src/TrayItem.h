@@ -4,6 +4,7 @@
 #include <QImage>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 
 // One entry of the StatusNotifierItem IconPixmap property (a(iiay)).
@@ -75,14 +76,21 @@ public:
     /** Pid of the process behind this item (for notification matching). */
     quint64 pid() const { return m_pid; }
 
+    /** Name of the process behind this item (read from /proc/<pid>/comm). */
+    QString processName() const { return m_processName; }
+
     /** True when the app exports a com.canonical.dbusmenu (SNI Menu). */
     bool hasMenu() const { return !m_menuPath.isEmpty(); }
     /** Load the menu tree via GetLayout(0, 2, ...); true on success. */
     bool fetchMenu();
     /** Direct children of parentId (0 = top level). */
     QList<MenuItem> menuChildren(int parentId) const;
-    /** Send a "clicked" Event for a menu item. */
-    void triggerMenuItem(int id);
+    /**
+     * Send a "clicked" Event for a menu item.  Returns false when the item
+     * failed to trigger (e.g. its id was stale after the app rebuilt the
+     * menu).
+     */
+    bool triggerMenuItem(int id);
 
     /**
      * Blink the icon for a while because a notification was received from
@@ -90,6 +98,10 @@ public:
      * StatusNotifierItem signals).  Stops on user interaction.
      */
     void flashAttention();
+
+    /** Stop blinking without sending the SNI Activate call - used when the
+     *  app window is activated from the taskbar instead of its tray icon. */
+    void dismissNotification();
 
     /** Notify the item of user interaction (coordinates are in logical px). */
     void activate(int x, int y);
@@ -116,6 +128,12 @@ private:
     /** A click on the icon: stop blinking, quiet icon-change blinks briefly. */
     void onUserInteraction();
 
+    // dbusmenu helpers (QQ rebuilds its menu ids frequently, so a cached id
+    // may be stale when the user clicks: map by label path and retry)
+    bool sendMenuEvent(int id, const QString &eventId);
+    QStringList labelPathForId(int id) const;
+    int idForLabelPath(const QStringList &path) const;
+
     QString m_service;
     QString m_path;
     QString m_title;
@@ -124,6 +142,7 @@ private:
     mutable QImage m_cachedPixmap;
     mutable int m_cachedTarget = 0;
     quint64 m_pid = 0;
+    QString m_processName;       // basename of the owning process (for sorting)
     QString m_menuPath;          // SNI Menu property (dbusmenu object path)
     QList<MenuItem> m_menuItems; // cached menu tree (top level)
 

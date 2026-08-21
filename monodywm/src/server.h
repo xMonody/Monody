@@ -16,6 +16,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
@@ -206,6 +207,8 @@ struct toplevel {
 	int id;
 	bool ipc_added; /* window_added was emitted */
 	char *app_id;   /* cached app_id (survives teardown for window_removed) */
+	pid_t pid;      /* client process id (lets the bar match tray items) */
+	int after_id;   /* id of the window this one was launched from (0 = none); focus returns there on close */
 
 	struct wl_list link; /* server.toplevels */
 
@@ -449,6 +452,7 @@ struct wlr_output *toplevel_output(struct server *server,
 	struct toplevel *tl);
 struct toplevel *neighbor_toplevel(struct server *server,
 	struct toplevel *tl, bool next, bool include_minimized);
+struct toplevel *toplevel_by_id(struct server *server, int id);
 void close_toplevel(struct toplevel *tl);
 void set_fullscreen(struct server *server, struct toplevel *tl,
 	bool fullscreen);

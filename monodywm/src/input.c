@@ -309,8 +309,8 @@ static struct toplevel *cycle_toplevel(struct server *server, bool next) {
 	return neighbor_toplevel(server, server->focused, next, true);
 }
 
-/* the Nth mapped toplevel in creation order (1-based index); NULL when
- * there is no such window.  Used by MOD+1..9 task switching. */
+/* the Nth mapped toplevel in creation order (0-based index); NULL when there
+ * is no such window.  Used by MOD+1..9 task switching. */
 static struct toplevel *nth_toplevel(struct server *server, int index) {
 	struct toplevel *tl;
 	int i = 0;

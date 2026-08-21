@@ -20,8 +20,8 @@ override with `--socket <path>`), one JSON object per line.
 Compositor → bar:
 
 ```json
-{"event":"window_list","windows":[{"id":1,"app_id":"firefox"}],"focused_id":1}  // snapshot on connect; focused_id optional (0 = none focused)
-{"event":"window_added","id":1,"app_id":"firefox"}                  // draw icon at the end of the taskbar
+{"event":"window_list","windows":[{"id":1,"app_id":"firefox","pid":1234}],"focused_id":1}  // snapshot on connect; focused_id optional (0 = none focused)
+{"event":"window_added","id":1,"app_id":"firefox","pid":1234}   // draw icon at the end of the taskbar
 {"event":"window_removed","id":1}                                     // remove the icon
 {"event":"window_focus","id":1}                                       // highlight the icon (id 0 clears)
 {"event":"window_full","id":3}                                        // sent once on enter AND once on exit fullscreen

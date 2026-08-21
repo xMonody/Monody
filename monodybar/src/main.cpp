@@ -72,6 +72,9 @@ int main(int argc, char *argv[])
     TrayModel trayModel;
     trayModel.setWatcher(&trayWatcher);
     trayWatcher.registerService();
+    // Pick up tray items that were exported before the watcher existed
+    // (apps started before the bar may never re-register).
+    trayWatcher.discoverExistingItems();
 
     // Freedesktop notification daemon: apps like QQ announce incoming
     // messages only through Notify (never via SNI signals), so owning the
@@ -79,6 +82,11 @@ int main(int argc, char *argv[])
     NotificationDaemon notificationDaemon;
     trayWatcher.connectNotificationDaemon(&notificationDaemon);
     notificationDaemon.registerService();
+
+    // When the user activates an app window from the taskbar (or the window
+    // gets focused), stop the matching tray icon from blinking.
+    QObject::connect(&controller, &BarController::windowActivated,
+                     &trayWatcher, &TrayWatcher::clearAttentionForPid);
 
     QQmlApplicationEngine engine;
     engine.addImageProvider(QStringLiteral("icons"), new IconProvider);
@@ -97,6 +105,10 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBg"), barCfg::activeBg);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgMenuBg"), barCfg::menuBg);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgActiveBorder"), barCfg::activeBorder);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgWinAppGap"), barCfg::winAppGap);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgAppGap"), barCfg::appGap);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgFocusPad"), barCfg::focusPad);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgFocusRadius"), barCfg::focusRadius);
     engine.load(QUrl(QStringLiteral("qrc:/qml/main.qml")));
     if (engine.rootObjects().isEmpty())
         return -1;

@@ -4,7 +4,9 @@
 #include "TrayItem.h"
 
 #include <QDBusConnection>
+#include <QDBusConnectionInterface>
 #include <QDBusMessage>
+#include <QDBusReply>
 #include <QDBusServiceWatcher>
 #include <QtDebug>
 
@@ -61,6 +63,47 @@ void TrayWatcher::onNotificationReceived(quint64 pid)
     }
 }
 
+void TrayWatcher::clearAttentionForPid(qint64 pid)
+{
+    if (pid <= 0)
+        return;
+    for (TrayItem *item : std::as_const(m_items)) {
+        if (item->pid() == static_cast<quint64>(pid))
+            item->dismissNotification();
+    }
+}
+
+void TrayWatcher::discoverExistingItems()
+{
+    const QDBusConnection bus = QDBusConnection::sessionBus();
+    const QDBusReply<QStringList> namesReply = bus.interface()->registeredServiceNames();
+    if (!namesReply.isValid())
+        return;
+
+    // Only probe unique connection names: a well-known name that is not
+    // currently owned would trigger DBus activation, which is not what we
+    // want during a discovery scan.
+    const QStringList names = namesReply.value();
+    for (const QString &service : names) {
+        if (!service.startsWith(QLatin1Char(':')))
+            continue;
+
+        // Every SNI item must expose the Id property.  A successful
+        // Properties.Get means the object is a real StatusNotifierItem.
+        QDBusMessage call = QDBusMessage::createMethodCall(
+            service, QStringLiteral("/StatusNotifierItem"),
+            QStringLiteral("org.freedesktop.DBus.Properties"),
+            QStringLiteral("Get"));
+        call << QStringLiteral("org.kde.StatusNotifierItem") << QStringLiteral("Id");
+        const QDBusMessage resp = bus.call(call, QDBus::Block, 300);
+        if (resp.type() == QDBusMessage::ReplyMessage
+                && addItem(service, QStringLiteral("/StatusNotifierItem"))) {
+            m_registeredList.append(service);
+            sendItemRegistered(service);
+        }
+    }
+}
+
 void TrayWatcher::RegisterStatusNotifierHost(const QString &service)
 {
     if (!m_hostRegistered) {
@@ -89,11 +132,11 @@ void TrayWatcher::RegisterStatusNotifierItem(const QString &service)
     sendItemRegistered(service);
 }
 
-void TrayWatcher::addItem(const QString &service, const QString &path)
+bool TrayWatcher::addItem(const QString &service, const QString &path)
 {
     const QString key = service + QLatin1Char('|') + path;
     if (m_indexByKey.contains(key))
-        return; // already known
+        return false; // already known
 
     auto *item = new TrayItem(service, path, this);
     m_indexByKey.insert(key, m_items.size());
@@ -101,6 +144,7 @@ void TrayWatcher::addItem(const QString &service, const QString &path)
     m_items.append(item);
     m_nameWatcher->addWatchedService(service);
     emit itemAdded(item);
+    return true;
 }
 
 void TrayWatcher::onNameOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner)

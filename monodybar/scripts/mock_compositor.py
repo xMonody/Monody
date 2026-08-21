@@ -3,9 +3,9 @@
 Mock compositor for testing xmonodybar, following the xmonodywm IPC protocol:
 
   compositor -> bar (newline-delimited JSON):
-    {"event":"window_list","windows":[{"id":1,"app_id":"firefox"}],
+    {"event":"window_list","windows":[{"id":1,"app_id":"firefox","pid":1234}],
      "focused_id":1}                            on connect (focused_id optional)
-    {"event":"window_added","id":1,"app_id":"firefox"}
+    {"event":"window_added","id":1,"app_id":"firefox","pid":1234}
     {"event":"window_removed","id":1}
     {"event":"window_focus","id":1}          id 0 clears
     {"event":"window_full","id":1}           enter AND exit
@@ -18,7 +18,7 @@ Mock compositor for testing xmonodybar, following the xmonodywm IPC protocol:
     {"action":"minimize_window","id":1}
 
 Commands (typed at the "mock>" prompt):
-  add <id> <app_id>   window_added
+  add <id> <app_id> [pid]   window_added
   rm <id>             window_removed
   focus <id>          window_focus  (-1 -> id 0, clears)
   full <id>           window_full   (send twice to enter+exit fullscreen)
@@ -43,7 +43,7 @@ def main():
 
     clients = set()
     lock = threading.Lock()
-    windows = {}  # id -> app_id
+    windows = {}  # id -> {"app_id": str, "pid": int}
     focused_id = 0
 
     def reader(conn):
@@ -77,7 +77,10 @@ def main():
     def send_window_list(target=None):
         payload = {
             "event": "window_list",
-            "windows": [{"id": i, "app_id": a} for i, a in sorted(windows.items())],
+            "windows": [
+                {"id": i, "app_id": w["app_id"], "pid": w["pid"]}
+                for i, w in sorted(windows.items())
+            ],
             "focused_id": focused_id,
         }
         msg = (json.dumps(payload) + "\n").encode()
@@ -130,8 +133,9 @@ def main():
             break
         elif op == "add" and len(parts) >= 3:
             wid, app = int(parts[1]), parts[2]
-            windows[wid] = app
-            broadcast({"event": "window_added", "id": wid, "app_id": app})
+            pid = int(parts[3]) if len(parts) >= 4 else 0
+            windows[wid] = {"app_id": app, "pid": pid}
+            broadcast({"event": "window_added", "id": wid, "app_id": app, "pid": pid})
         elif op == "rm" and len(parts) >= 2:
             wid = int(parts[1])
             windows.pop(wid, None)
@@ -145,7 +149,7 @@ def main():
         elif op == "full" and len(parts) >= 2:
             broadcast({"event": "window_full", "id": int(parts[1])})
         else:
-            print("usage: add <id> <app_id> | rm <id> | focus <id> | full <id> | quit")
+            print("usage: add <id> <app_id> [pid] | rm <id> | focus <id> | full <id> | quit")
 
     server.close()
     try:

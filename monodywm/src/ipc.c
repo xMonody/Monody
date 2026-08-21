@@ -106,17 +106,6 @@ static void ipc_client_queue(struct ipc_client *client, const char *json) {
 	wl_event_source_fd_update(client->source, mask);
 }
 
-/* find a live toplevel by its IPC id */
-static struct toplevel *toplevel_by_id(struct server *server, int id) {
-	struct toplevel *tl;
-	wl_list_for_each(tl, &server->toplevels, link) {
-		if (tl->id == id) {
-			return tl;
-		}
-	}
-	return NULL;
-}
-
 /* handle one complete JSON message received from a client */
 static void ipc_handle_line(struct server *server, struct ipc_client *client,
 		const char *line) {
@@ -262,10 +251,12 @@ void ipc_send_window_event(struct server *server, const char *event,
 		cJSON_AddNumberToObject(root, "id", tl->id);
 		cJSON_AddStringToObject(root, "app_id",
 			tl->app_id != NULL ? tl->app_id : "");
+		cJSON_AddNumberToObject(root, "pid", (double)tl->pid);
 	} else {
 		/* focus cleared: id 0, no window */
 		cJSON_AddNumberToObject(root, "id", 0);
 		cJSON_AddStringToObject(root, "app_id", "");
+		cJSON_AddNumberToObject(root, "pid", 0);
 	}
 	char *json = cJSON_PrintUnformatted(root);
 	if (json != NULL) {
@@ -287,6 +278,9 @@ static void ipc_send_window_list(struct server *server,
 	cJSON_AddStringToObject(root, "event", "window_list");
 	cJSON *arr = cJSON_CreateArray();
 	cJSON_AddItemToObject(root, "windows", arr);
+
+	/* creation order: new windows are always appended to the end of the
+	 * taskbar, regardless of how they were launched */
 	struct toplevel *tl;
 	wl_list_for_each(tl, &server->toplevels, link) {
 		if (tl->xdg_toplevel->base == NULL ||
@@ -297,6 +291,7 @@ static void ipc_send_window_list(struct server *server,
 		cJSON_AddNumberToObject(w, "id", tl->id);
 		cJSON_AddStringToObject(w, "app_id",
 			tl->app_id != NULL ? tl->app_id : "");
+		cJSON_AddNumberToObject(w, "pid", (double)tl->pid);
 		cJSON_AddItemToArray(arr, w);
 	}
 	/* tell (new) bars which window currently has focus so the highlight

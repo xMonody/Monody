@@ -23,9 +23,23 @@ inline constexpr int height = 38;
 // 圆角弧度 (像素), 0 = 直角
 inline constexpr int radius = 10;
 
+// win 图标与第一个应用图标之间的距离 (像素)
+inline constexpr int winAppGap = 30;
+
+// 两个应用图标之间的距离 (像素)
+inline constexpr int appGap = 18;
+
+// 焦点/悬停背景超出应用图标的宽度 (单边, 像素, 左右对称)
+// 例如: 图标宽 29, focusPad = 4 => 背景宽 29 + 2*4 = 37
+// 背景高度固定为 36 (见 qml/main.qml), 不随 focusPad 变化。
+inline constexpr int focusPad = 6;
+
+// 焦点/悬停背景 (胶囊) 的圆角弧度 (像素)
+inline constexpr int focusRadius = 6;
+
 // 状态栏透明度, 0.0 = 全透明, 1.0 = 不透明
 // (叠加在 barColor 之上, barColor 自带的 alpha 会被忽略)
-inline constexpr qreal opacity = 0.95;
+inline constexpr qreal opacity = 0.9;
 
 // 状态栏背景色 (RGB)
 inline const QColor barColor = QColor(0x1e, 0x1e, 0x2e); //#1E1E2E

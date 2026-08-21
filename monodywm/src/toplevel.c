@@ -16,6 +16,7 @@
 #include "ipc.h"
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -28,6 +29,58 @@
 #include <wlr/util/log.h>
 #include <wlr/util/box.h>
 #include <wlr/util/edges.h>
+
+/* Parent process id of pid, read from /proc/<pid>/stat; 0 on failure. */
+static pid_t process_parent_pid(pid_t pid) {
+	if (pid <= 1)
+		return 0;
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+	FILE *f = fopen(path, "re");
+	if (f == NULL)
+		return 0;
+	char buf[1024];
+	size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+	fclose(f);
+	buf[n] = '\0';
+	/* comm is in parentheses and may contain spaces and ')': the last ')'
+	 * is the delimiter, followed by " state ppid ..." */
+	char *close = strrchr(buf, ')');
+	if (close == NULL)
+		return 0;
+	char state = 0;
+	pid_t ppid = 0;
+	if (sscanf(close + 2, "%c %d", &state, &ppid) != 2)
+		return 0;
+	return ppid;
+}
+
+/* Nearest ancestor window of pid by walking up the process tree (a window
+ * launched from a terminal is a descendant of the terminal).  Prefers the
+ * focused window when several windows share the same pid.  Returns NULL when
+ * no ancestor is a window (launched by the compositor, the bar, or after the
+ * launching process has daemonized/reparented to init). */
+static struct toplevel *window_ancestor(struct server *server, pid_t pid) {
+	pid_t cur = pid;
+	for (int hops = 0; hops < 16 && cur > 1; ++hops) {
+		struct toplevel *fallback = NULL;
+		struct toplevel *tl;
+		wl_list_for_each(tl, &server->toplevels, link) {
+			if (tl->pid != 0 && tl->pid == cur) {
+				if (tl == server->focused)
+					return tl;
+				if (fallback == NULL)
+					fallback = tl;
+			}
+		}
+		if (fallback != NULL)
+			return fallback;
+		cur = process_parent_pid(cur);
+		if (cur <= 0)
+			break;
+	}
+	return NULL;
+}
 
 /* effective window geometry box in layout coordinates: the xdg window
  * geometry (the window bounds per xdg-shell, excluding CSD margins/drop
@@ -207,6 +260,33 @@ struct toplevel *neighbor_toplevel(struct server *server,
 		iter = next ? iter->next : iter->prev;
 	}
 	return NULL;
+}
+
+/* find a live toplevel by its IPC id (shared with ipc.c) */
+struct toplevel *toplevel_by_id(struct server *server, int id) {
+	struct toplevel *tl;
+	wl_list_for_each(tl, &server->toplevels, link) {
+		if (tl->id == id) {
+			return tl;
+		}
+	}
+	return NULL;
+}
+
+/* the window that should receive focus when the focused toplevel `tl` goes
+ * away: prefer the window that launched it (after_id), then fall back to the
+ * previous visible window in creation order. */
+static struct toplevel *focus_fallback(struct server *server,
+		struct toplevel *tl) {
+	if (tl->after_id > 0) {
+		struct toplevel *launcher = toplevel_by_id(server, tl->after_id);
+		if (launcher != NULL && launcher != tl &&
+				launcher->xdg_toplevel->base != NULL &&
+				launcher->xdg_toplevel->base->surface->mapped) {
+			return launcher;
+		}
+	}
+	return neighbor_toplevel(server, tl, false, false);
 }
 
 /* ------------------------------------------------------------------ */
@@ -525,13 +605,13 @@ void update_toplevel_output(struct server *server, struct toplevel *tl) {
 
 static void toplevel_unfocus(struct server *server, struct toplevel *tl) {
 	if (server->focused == tl) {
-		/* the focused window is going away: hand focus to the previous
-		 * visible window */
-		struct toplevel *prev = neighbor_toplevel(server, tl, false, false);
+		/* the focused window is going away: hand focus back to the window
+		 * that launched it (after_id), or the previous visible window */
+		struct toplevel *prev = focus_fallback(server, tl);
 		server->focused = NULL;
 		wlr_seat_keyboard_clear_focus(server->seat);
 		if (prev != NULL) {
-			focus_toplevel(server, prev);
+			focus_window(server, prev);
 		} else {
 			ipc_send_window_event(server, "window_focus", NULL);
 			ime_set_focus(server, NULL);
@@ -1156,6 +1236,14 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 	tl->app_id = strdup(xdg_toplevel->app_id != NULL
 		? xdg_toplevel->app_id : "");
 
+	/* remember the client's pid so the bar can match this window to its
+	 * tray item (by pid) and clear message notifications when the window
+	 * is activated from the taskbar */
+	tl->pid = 0;
+	if (base->client != NULL && base->client->client != NULL) {
+		wl_client_get_credentials(base->client->client, &tl->pid, NULL, NULL);
+	}
+
 	/* the xdg surface tree handles the surface, subsurfaces and their
 	 * positioning */
 	tl->scene_tree = wlr_scene_xdg_surface_create(
@@ -1241,6 +1329,11 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 	 * toplevel signals are empty, i.e. on xdg_toplevel->events.destroy */
 	tl->toplevel_destroy.notify = xdg_toplevel_destroy;
 	wl_signal_add(&xdg_toplevel->events.destroy, &tl->toplevel_destroy);
+
+	/* Remember which window (if any) launched this one: when this window
+	 * closes, focus returns to that launcher window. */
+	struct toplevel *ancestor = window_ancestor(server, process_parent_pid(tl->pid));
+	tl->after_id = ancestor != NULL ? ancestor->id : 0;
 
 	wl_list_insert(server->toplevels.prev, &tl->link);
 }

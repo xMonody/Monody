@@ -127,16 +127,29 @@ QVariantList TrayModel::menuItems(int row, int parentId)
     return out;
 }
 
-void TrayModel::triggerMenu(int row, int id)
+bool TrayModel::triggerMenu(int row, int id)
 {
-    if (row >= 0 && row < m_items.size())
-        m_items.at(row)->triggerMenuItem(id);
+    if (row < 0 || row >= m_items.size())
+        return false;
+    return m_items.at(row)->triggerMenuItem(id);
 }
 
 void TrayModel::onItemAdded(TrayItem *item)
 {
-    beginInsertRows(QModelIndex(), m_items.size(), m_items.size());
-    m_items.append(item);
+    // Keep input-method items (fcitx5) at the very end of the tray, right
+    // next to the clock; every other app stays in front of them, in arrival
+    // order.  The process name comes from /proc/<pid>/comm (see TrayItem).
+    int insertAt = m_items.size();
+    if (!item->processName().startsWith(QLatin1String("fcitx"), Qt::CaseInsensitive)) {
+        for (int i = 0; i < m_items.size(); ++i) {
+            if (m_items.at(i)->processName().startsWith(QLatin1String("fcitx"), Qt::CaseInsensitive)) {
+                insertAt = i;
+                break;
+            }
+        }
+    }
+    beginInsertRows(QModelIndex(), insertAt, insertAt);
+    m_items.insert(insertAt, item);
     endInsertRows();
     emit countChanged();
     connect(item, &TrayItem::iconChanged, this, &TrayModel::onItemChanged);

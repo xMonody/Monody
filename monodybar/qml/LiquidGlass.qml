@@ -13,7 +13,7 @@ Rectangle {
     property int size: 36        // pill size, override for smaller icons
     implicitWidth: size
     implicitHeight: size
-    radius: 6
+    radius: barCfgFocusRadius     // pill corner radius (see BarConfig.h)
     color: "transparent"
     antialiasing: true
 

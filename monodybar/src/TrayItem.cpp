@@ -9,6 +9,7 @@
 #include <QDBusObjectPath>
 #include <QDBusReply>
 #include <QDBusVariant>
+#include <QFile>
 #include <QtDebug>
 #include <functional>
 
@@ -151,6 +152,14 @@ TrayItem::TrayItem(const QString &service, const QString &path, QObject *parent)
         QDBusConnection::sessionBus().interface()->servicePid(m_service);
     if (pidReply.isValid())
         m_pid = pidReply.value();
+
+    // Read the process name once so the tray model can keep input methods
+    // (fcitx5) pinned to the end of the tray.
+    if (m_pid > 0) {
+        QFile f(QStringLiteral("/proc/%1/comm").arg(m_pid));
+        if (f.open(QIODevice::ReadOnly))
+            m_processName = QString::fromUtf8(f.readAll()).trimmed();
+    }
 
     // Refresh our cached icon/title/attention when the item changes them.
     QDBusConnection::sessionBus().connect(m_service, m_path,
@@ -327,21 +336,88 @@ QList<MenuItem> TrayItem::menuChildren(int parentId) const
     return find(m_menuItems);
 }
 
-void TrayItem::triggerMenuItem(int id)
+bool TrayItem::triggerMenuItem(int id)
 {
     if (m_menuPath.isEmpty())
-        return;
+        return false;
+
+    // QQ rebuilds its menu (and renumbers every item id) frequently, so the
+    // id handed to us from the cached layout can already be stale.  Try it
+    // as-is first; on failure re-fetch the layout, map the item by its label
+    // path to the fresh id, and retry once.
+    if (sendMenuEvent(id, QStringLiteral("clicked")))
+        return true;
+
+    const QStringList path = labelPathForId(id);
+    if (path.isEmpty())
+        return false;
+
+    if (fetchMenu()) {
+        const int fresh = idForLabelPath(path);
+        if (fresh >= 0 && fresh != id)
+            return sendMenuEvent(fresh, QStringLiteral("clicked"));
+    }
+    return false;
+}
+
+bool TrayItem::sendMenuEvent(int id, const QString &eventId)
+{
     QDBusMessage call = QDBusMessage::createMethodCall(
         m_service, m_menuPath, QStringLiteral("com.canonical.dbusmenu"),
         QStringLiteral("Event"));
     // data is a variant (v); a plain QVariant(QString()) marshals as 's'
     // and an empty QDBusVariant fails to marshal.  A QDBusVariant wrapping a
     // non-empty value marshals as 'v' with that value inside.
-    call << id << QStringLiteral("clicked")
+    call << id << eventId
          << QVariant::fromValue(QDBusVariant(QVariant(QString()))) << quint32(0);
     const QDBusMessage reply = QDBusConnection::sessionBus().call(call);
-    if (reply.type() == QDBusMessage::ErrorMessage)
-        qWarning() << "[menu] event error:" << reply.errorMessage();
+    if (reply.type() == QDBusMessage::ErrorMessage) {
+        qWarning() << "[menu] event error:" << reply.errorName()
+                   << reply.errorMessage();
+        return false;
+    }
+    return true;
+}
+
+QStringList TrayItem::labelPathForId(int id) const
+{
+    std::function<QStringList(const QList<MenuItem> &)> find =
+        [&](const QList<MenuItem> &list) -> QStringList {
+            for (const MenuItem &mi : list) {
+                if (mi.id == id)
+                    return { mi.label };
+                const QStringList sub = find(mi.children);
+                if (!sub.isEmpty()) {
+                    QStringList path;
+                    path.reserve(sub.size() + 1);
+                    path.append(mi.label);
+                    path.append(sub);
+                    return path;
+                }
+            }
+            return {};
+        };
+    return find(m_menuItems);
+}
+
+int TrayItem::idForLabelPath(const QStringList &path) const
+{
+    const QList<MenuItem> *list = &m_menuItems;
+    for (int i = 0; i < path.size(); ++i) {
+        const MenuItem *match = nullptr;
+        for (const MenuItem &mi : *list) {
+            if (mi.label == path.at(i)) {
+                match = &mi;
+                break;
+            }
+        }
+        if (!match)
+            return -1;
+        if (i == path.size() - 1)
+            return match->id;
+        list = &match->children;
+    }
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +431,13 @@ void TrayItem::flashAttention()
     // "message read" in any other way.
     setAttention(true, AttentionSource::Notification);
     m_attentionTimer.stop();
+}
+
+void TrayItem::dismissNotification()
+{
+    // Same as a tray click, but without sending Activate: the app window
+    // was already activated elsewhere (taskbar icon).
+    onUserInteraction();
 }
 
 void TrayItem::setAttention(bool on, AttentionSource source)

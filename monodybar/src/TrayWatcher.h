@@ -41,6 +41,19 @@ public:
      */
     void connectNotificationDaemon(NotificationDaemon *daemon);
 
+    /** Clear message attention on tray items whose pid matches (called when
+     *  the app's window is activated from the taskbar). */
+    void clearAttentionForPid(qint64 pid);
+
+    /**
+     * Adopt StatusNotifierItems that were exported before this watcher
+     * started.  Apps launched before the bar tried to register while no
+     * watcher existed and many (Electron/QQ) never retry, so probe every
+     * unique connection's default /StatusNotifierItem object and add the
+     * ones that exist.
+     */
+    void discoverExistingItems();
+
     QStringList registeredItems() const { return m_registeredList; }
     bool isHostRegistered() const { return m_hostRegistered; }
     int protocolVersion() const { return 0; }
@@ -67,7 +80,7 @@ private:
     void sendHostRegistered();
     void sendHostUnregistered();
     void onNameOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
-    void addItem(const QString &service, const QString &path);
+    bool addItem(const QString &service, const QString &path);
 
     QDBusServiceWatcher *m_nameWatcher = nullptr;
     QList<TrayItem *> m_items;         // insertion order

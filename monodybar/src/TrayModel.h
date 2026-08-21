@@ -47,8 +47,8 @@ public:
     Q_INVOKABLE bool fetchMenu(int row);
     /** Menu entries under parentId (0 = top level), as QVariantMap list. */
     Q_INVOKABLE QVariantList menuItems(int row, int parentId);
-    /** Trigger a "clicked" event on a menu item. */
-    Q_INVOKABLE void triggerMenu(int row, int id);
+    /** Trigger a "clicked" event on a menu item; returns true on success. */
+    Q_INVOKABLE bool triggerMenu(int row, int id);
 
 signals:
     void countChanged();

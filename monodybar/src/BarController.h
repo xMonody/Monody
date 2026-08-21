@@ -11,6 +11,7 @@ struct WindowInfo
 {
     int id = -1;
     QString appId;
+    qint64 pid = 0;   // client process id (for matching tray items)
 };
 
 /**
@@ -31,11 +32,12 @@ public:
     QVariant data(const QModelIndex &index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 
-    /** Add a window, keeping insertion order; updates in place when the id exists. */
-    void addWindow(int id, const QString &appId);
+    /** Add a window at the end of the taskbar; updates in place when the id exists. */
+    void addWindow(int id, const QString &appId, qint64 pid = 0);
     void removeWindow(int id);
     void clear();
     int indexOf(int id) const;
+    qint64 pidForId(int id) const;
 
 private:
     QList<WindowInfo> m_items;
@@ -120,6 +122,8 @@ signals:
     void lastEventChanged();
     void eventsProcessedChanged();
     void socketPathChanged();
+    /** Emitted when a window is activated/focused (its app's pid). */
+    void windowActivated(qint64 pid);
 
 private slots:
     void onSocketConnected();
