@@ -274,10 +274,30 @@ struct toplevel *toplevel_by_id(struct server *server, int id) {
 }
 
 /* the window that should receive focus when the focused toplevel `tl` goes
- * away: prefer the window that launched it (after_id), then fall back to the
- * previous visible window in creation order. */
+ * away: a dialog hands focus back to its xdg parent (the main window it
+ * belongs to), otherwise prefer the window that launched it (after_id),
+ * then fall back to the previous visible window in creation order. */
 static struct toplevel *focus_fallback(struct server *server,
 		struct toplevel *tl) {
+	/* a transient/dialog window declared its parent via
+	 * xdg_toplevel.set_parent: when it closes, focus must return to that
+	 * parent main window, not to the window that launched the dialog (e.g.
+	 * fcitx5-config run from a terminal - the terminal is the launcher of
+	 * the main window, but closing the dialog should keep focus on the
+	 * main window). */
+	if (tl->xdg_toplevel != NULL && tl->xdg_toplevel->parent != NULL) {
+		struct wlr_xdg_surface *parent_base =
+			tl->xdg_toplevel->parent->base;
+		if (parent_base != NULL) {
+			struct toplevel *parent = parent_base->data;
+			if (parent != NULL && parent != tl &&
+					parent->xdg_toplevel != NULL &&
+					parent->xdg_toplevel->base != NULL &&
+					parent->xdg_toplevel->base->surface->mapped) {
+				return parent;
+			}
+		}
+	}
 	if (tl->after_id > 0) {
 		struct toplevel *launcher = toplevel_by_id(server, tl->after_id);
 		if (launcher != NULL && launcher != tl &&
