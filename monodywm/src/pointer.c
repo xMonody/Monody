@@ -11,6 +11,7 @@
  * the client; client-side decorated windows keep their native controls.
  */
 
+#include "keycast.h"
 #include "server.h"
 
 #include <limits.h>
@@ -1369,6 +1370,9 @@ void cursor_motion_absolute(struct wl_listener *listener, void *data) {
 void cursor_button(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *event = data;
+	/* echo physical mouse buttons to the showkey overlay, independent of
+	 * chords / gestures / grabs below */
+	keycast_button(server, event->button, event->state);
 	process_cursor_button(server, event->time_msec, event->button,
 		event->state);
 }
@@ -1376,6 +1380,8 @@ void cursor_button(struct wl_listener *listener, void *data) {
 void cursor_axis(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server, cursor_axis);
 	struct wlr_pointer_axis_event *event = data;
+	/* echo discrete scroll steps to the showkey overlay */
+	keycast_scroll(server, event->orientation, event->delta_discrete);
 	process_cursor_axis(server, event->time_msec, event);
 }
 

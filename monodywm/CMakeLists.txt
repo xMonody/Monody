@@ -114,6 +114,7 @@ endforeach()
 set(COMPOSITOR_SOURCES
 	src/main.c
 	src/ipc.c
+	src/keycast.c
 	src/scene.c
 	src/ime.c
 	src/toplevel.c

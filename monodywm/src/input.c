@@ -8,6 +8,7 @@
  */
 
 #include "ipc.h"
+#include "keycast.h"
 #include "server.h"
 
 #include <stdio.h>
@@ -461,6 +462,14 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 	struct server *server = kb->server;
 	struct wlr_keyboard_key_event *event = data;
 	uint32_t keycode = event->keycode + 8;
+	/* feed the keyboard echo overlay (showkey) with physical keys from the
+	 * seat keyboard only.  fcitx5's passthrough virtual keyboard re-injects
+	 * every key after the IM processes it, so echoing every device would
+	 * show each keystroke twice ("l ×2 s ×2").  The seat keyboard is the
+	 * primary typing device; the re-injection device is not. */
+	if (kb->keyboard == wlr_seat_get_keyboard(server->seat)) {
+		keycast_key(server, kb->keyboard, event->keycode, event->state);
+	}
 	wlr_log(WLR_DEBUG, "input: KEY kb=%p code=%u grabbed=%d seat=%p",
 		(void *)kb->keyboard, event->keycode,
 		ime_keyboard_grabbed(server, kb->keyboard),

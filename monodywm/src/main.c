@@ -20,6 +20,7 @@
 #include "server.h"
 
 #include "ipc.h"
+#include "keycast.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -478,6 +479,11 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "failed to start IPC socket at %s", ipc_path);
 	}
 
+	/* keyboard echo feed for the showkey overlay; failures are non-fatal */
+	if (!keycast_init(&server)) {
+		wlr_log(WLR_ERROR, "failed to start keycast socket");
+	}
+
 	wlr_log(WLR_INFO, "Running Wayland compositor on WAYLAND_DISPLAY=%s",
 		socket);
 	wl_display_run(server.display);
@@ -514,6 +520,7 @@ int main(int argc, char *argv[]) {
 	wl_list_remove(&server.seat_request_start_drag.link);
 	wl_list_remove(&server.seat_start_drag.link);
 
+	keycast_finish(&server);
 	ipc_server_destroy(&server);
 	wl_display_destroy_clients(server.display);
 	wl_display_destroy(server.display);
