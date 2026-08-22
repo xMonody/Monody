@@ -48,6 +48,7 @@ set(PROTOCOLS
 	wayland
 	xdg-shell
 	xdg-decoration-unstable-v1
+	xdg-output-unstable-v1
 	viewporter
 	presentation-time
 	linux-dmabuf-v1

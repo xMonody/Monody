@@ -44,6 +44,7 @@
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_shm.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_subcompositor.h>
@@ -265,6 +266,11 @@ int main(int argc, char *argv[]) {
 	}
 	server.output_layout = wlr_output_layout_create(server.display);
 	server.output_manager = wlr_output_manager_v1_create(server.display);
+	/* xdg-output-unstable-v1: tells clients (grim, xwayland, ...) the
+	 * logical geometry/name of each output.  grim refuses to trust the
+	 * core wl_output geometry for capture and falls back to guessing when
+	 * this global is missing, which produces 0x0 captures on this layout. */
+	wlr_xdg_output_manager_v1_create(server.display, server.output_layout);
 	server.foreign_toplevel_manager =
 		wlr_foreign_toplevel_manager_v1_create(server.display);
 
@@ -323,8 +329,7 @@ int main(int argc, char *argv[]) {
 	 * damage, cursor overlay), the compositor only registers the global.
 	 * Kept in favor of ext-image-copy-capture-v1: it is what the capture
 	 * tools expect today and works with the bundled DMABUF/SHM paths. */
-	struct wlr_screencopy_manager_v1 *screencopy_manager =
-		wlr_screencopy_manager_v1_create(server.display);
+	struct wlr_screencopy_manager_v1 *screencopy_manager = wlr_screencopy_manager_v1_create(server.display);
 	if (screencopy_manager == NULL) {
 		wlr_log(WLR_ERROR, "failed to create wlr-screencopy-v1 global");
 	}
