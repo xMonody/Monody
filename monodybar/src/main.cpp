@@ -1,5 +1,8 @@
 #include <QCommandLineParser>
 #include <QDBusMetaType>
+#include <QFile>
+#include <QFont>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -7,14 +10,19 @@
 
 #include "BarConfig.h"
 #include "BarController.h"
+#include "BatteryModule.h"
+#include "BluetoothModule.h"
 #include "DesktopApps.h"
 #include "IconIndex.h"
 #include "IconProvider.h"
+#include "NetworkModule.h"
 #include "NotificationDaemon.h"
+#include "PowerModule.h"
 #include "TrayIconProvider.h"
 #include "TrayItem.h"
 #include "TrayModel.h"
 #include "TrayWatcher.h"
+#include "VolumeModule.h"
 #include "LayerShellQt/window.h"
 
 // Must match `height` in qml/main.qml (also used as the exclusive zone).
@@ -36,6 +44,28 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("monodybar"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0"));
+
+    // 自定义字体 (barCfg::font, 见 BarConfig.h): 支持系统字体家族名,
+    // 也支持字体文件路径 (.ttf/.otf, 自动加载并用其中的第一个家族)。
+    // 通过 QGuiApplication::setFont 设为全局默认, 所有 QML 文本继承
+    // (显式指定了 font.family 的除外, 如调试面板)。
+    {
+        QString fontFamily = barCfg::font;
+        if (!fontFamily.isEmpty()) {
+            if (QFile::exists(fontFamily)) {
+                const int id = QFontDatabase::addApplicationFont(fontFamily);
+                if (id >= 0) {
+                    const QStringList families =
+                            QFontDatabase::applicationFontFamilies(id);
+                    if (!families.isEmpty())
+                        fontFamily = families.first();
+                }
+            }
+            QFont f = app.font();
+            f.setFamily(fontFamily);
+            app.setFont(f);
+        }
+    }
 
     // Register the SNI IconPixmap type (a(iiay)) up front so every DBus
     // property read can demarshal it without warning.
@@ -88,11 +118,26 @@ int main(int argc, char *argv[])
     QObject::connect(&controller, &BarController::windowActivated,
                      &trayWatcher, &TrayWatcher::clearAttentionForPid);
 
+    // System-bus status modules (battery / network / bluetooth): each one
+    // watches its D-Bus service and exposes state to QML (see module/).
+    // The volume module talks to PipeWire natively (module/VolumeModule.h),
+    // driven by Qt's event loop via QSocketNotifier.
+    BatteryModule batteryModule;
+    NetworkModule networkModule;
+    BluetoothModule bluetoothModule;
+    VolumeModule volumeModule;
+    PowerModule powerModule;
+
     QQmlApplicationEngine engine;
     engine.addImageProvider(QStringLiteral("icons"), new IconProvider);
     engine.addImageProvider(QStringLiteral("trayicons"), new TrayIconProvider(&trayModel));
     engine.rootContext()->setContextProperty(QStringLiteral("bar"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("trayModel"), &trayModel);
+    engine.rootContext()->setContextProperty(QStringLiteral("batteryModule"), &batteryModule);
+    engine.rootContext()->setContextProperty(QStringLiteral("networkModule"), &networkModule);
+    engine.rootContext()->setContextProperty(QStringLiteral("bluetoothModule"), &bluetoothModule);
+    engine.rootContext()->setContextProperty(QStringLiteral("volumeModule"), &volumeModule);
+    engine.rootContext()->setContextProperty(QStringLiteral("powerModule"), &powerModule);
     engine.rootContext()->setContextProperty(QStringLiteral("barHeight"), barCfg::height);
     engine.rootContext()->setContextProperty(QStringLiteral("desktopApps"), &desktopApps);
 
@@ -109,6 +154,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgAppGap"), barCfg::appGap);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgFocusPad"), barCfg::focusPad);
     engine.rootContext()->setContextProperty(QStringLiteral("barCfgFocusRadius"), barCfg::focusRadius);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgShowStatusPercent"), barCfg::showStatusPercent);
+    engine.rootContext()->setContextProperty(QStringLiteral("barCfgStatusGap"), barCfg::statusGap);
     engine.load(QUrl(QStringLiteral("qrc:/qml/main.qml")));
     if (engine.rootObjects().isEmpty())
         return -1;
@@ -159,23 +206,34 @@ int main(int argc, char *argv[])
         qWarning() << "launcher window not found";
     }
 
-    // The task-icon context menu is a second full-screen overlay; it owns
-    // the whole screen while open so any click outside the panel (handled in
-    // QML) closes it, and it can render outside the bar's small surface.
-    if (auto *menuWin = engine.rootObjects().first()->findChild<QQuickWindow *>(QStringLiteral("contextMenuWindow"))) {
-        if (auto *shell = LayerShellQt::Window::get(menuWin)) {
-            shell->setLayer(LayerShellQt::Window::LayerOverlay);
-            shell->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop
-                                                            | LayerShellQt::Window::AnchorBottom
-                                                            | LayerShellQt::Window::AnchorLeft
-                                                            | LayerShellQt::Window::AnchorRight));
-            shell->setMargins(QMargins(0, 0, 0, 0));
-            shell->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
-            shell->setExclusiveZone(0);
-            shell->setScope(QStringLiteral("monodybar-context-menu"));
+    // Popup overlays: full-screen layer surfaces on top of everything. Each
+    // owns the whole screen while open so any click outside the panel
+    // (handled in QML) closes it, and each can render outside the bar's
+    // small surface.  Every popup has its own layer-shell scope.
+    const struct {
+        const char *objectName;
+        const char *scope;
+    } popupWindows[] = {
+        { "contextMenuWindow",   "monodybar-context-menu"   },
+        { "trayMenuWindow",      "monodybar-tray-menu"      },
+        { "quickSettingsWindow", "monodybar-quick-settings" },
+    };
+    for (const auto &popup : popupWindows) {
+        if (auto *popupWin = engine.rootObjects().first()->findChild<QQuickWindow *>(QString::fromLatin1(popup.objectName))) {
+            if (auto *shell = LayerShellQt::Window::get(popupWin)) {
+                shell->setLayer(LayerShellQt::Window::LayerOverlay);
+                shell->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop
+                                                                | LayerShellQt::Window::AnchorBottom
+                                                                | LayerShellQt::Window::AnchorLeft
+                                                                | LayerShellQt::Window::AnchorRight));
+                shell->setMargins(QMargins(0, 0, 0, 0));
+                shell->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
+                shell->setExclusiveZone(0);
+                shell->setScope(QString::fromLatin1(popup.scope));
+            }
+        } else {
+            qWarning() << popup.objectName << "not found";
         }
-    } else {
-        qWarning() << "context menu window not found";
     }
 
     controller.start();

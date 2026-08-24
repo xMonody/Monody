@@ -20,6 +20,10 @@ inline constexpr int width = 0;
 // 状态栏高度 (像素), 同时作为 layer-shell 的排他区域 (exclusive zone)
 inline constexpr int height = 38;
 
+// 或字体文件路径 (如 "/home/user/fonts/MyFont.ttf", 自动加载)。
+// 留空 = 使用系统默认字体。
+inline const QString font = QStringLiteral("SauceCodePro NFM");
+
 // 圆角弧度 (像素), 0 = 直角
 inline constexpr int radius = 10;
 
@@ -53,5 +57,11 @@ inline const QColor menuBg = QColor(0x30, 0x34, 0x46, 0xf5);
 // 活动 (聚焦) 窗口图标背景的边框宽度 (像素), 0 = 不画边框。
 // 边框颜色/透明度跟随 activeBg 上面的白色 (见 LiquidGlass.qml)。
 inline constexpr int activeBorder = 0;
+
+// 状态栏右侧是否显示音量/电量百分比数字 (false = 只显示图标)
+inline constexpr bool showStatusPercent = false;
+
+// 托盘 ↔ 状态胶囊 ↔ 时间 之间的对称间距 (像素)
+inline constexpr int statusGap = 6;
 
 } // namespace barCfg

@@ -1,11 +1,16 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 
 // Floating taskbar, rendered as a layer-shell surface (top layer).
 // Width comes from barCfgWidth (0 = full screen, see src/BarConfig.h).
 // Visible/shown is controlled from C++ after the surface is configured,
 // and toggled by the "window_full" event.
+//
+// The bar content is split across several component files:
+//   WinStart.qml   - start button + start-menu popup
+//   AppIcons.qml   - running-window icons + task context menu
+//   Tray.qml       - system tray + tray menu
+//   StatusBar.qml  - volume/battery/network/bluetooth + clock + quick settings
 Window {
     id: win
     width: barCfgWidth > 0 ? barCfgWidth : Screen.width
@@ -56,136 +61,20 @@ Window {
         anchors.rightMargin: 6
         spacing: barCfgAppGap        // distance between two app icons
 
-        // ---- left icon: Windows-like logo, no function for now ----
-        Item {
-            width: 40
-            height: barHeight
-
-            // liquid-glass hover/active background, same size as task icons
-            LiquidGlass {
-                anchors.centerIn: parent
-                lit: launcher.visible              // lit while the start menu is open
-                hovered: startMouse.containsMouse
-            }
-            Image {                            // Windows logo from win.png
-                width: 24
-                height: 24
-                anchors.centerIn: parent
-                source: "qrc:/win.png"
-                sourceSize: Qt.size(120, 120)
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-
-                // shrink while pressed, spring back on release
-                scale: startMouse.pressed ? 0.85 : 1.0
-                Behavior on scale {
-                    NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
-                }
-            }
-            MouseArea {
-                id: startMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                onClicked: launcher.visible ? closeLauncher() : openLauncher()   // start menu toggle
-            }
+        // ---- start button + start-menu popup ----
+        WinStart {
+            id: winStart
+            barWindow: win
         }
 
         // ---- gap: extra width so the win icon sits barCfgWinAppGap px from
         //      the first app (RowLayout spacing already adds appGap per side) ----
         Item { width: Math.max(0, barCfgWinAppGap - 2 * barCfgAppGap); height: barHeight }
 
-        // ---- running windows (one icon per window) ----
-        Repeater {
-            model: bar.windows
-
-            delegate: Item {
-                id: taskItem
-                width: 40
-                height: barHeight
-
-                readonly property bool focused: model.id === bar.focusedId
-                readonly property int iconSize: 29
-
-                // Liquid-glass focus/hover background (shared component):
-                // translucent tint + light edge.
-                // Same size in every state; only the tint depth changes.
-                LiquidGlass {
-                    id: taskBg
-                    anchors.centerIn: parent
-                    // focus/hover pill: barCfgFocusPad extra on each side.
-                    // Height stays fixed (36) so the pill never grows taller
-                    // than the bar and its corners never get clipped.
-                    width: taskItem.iconSize + 2 * barCfgFocusPad
-                    height: 36
-                    lit: taskItem.focused
-                    hovered: itemMouse.containsMouse
-                }
-
-                // app icon from the theme (rendered by IconProvider, so
-                // SVG icons survive Qt's weak built-in SVG renderer)
-                Image {
-                    id: iconImage
-                    width: taskItem.iconSize
-                    height: taskItem.iconSize
-                    anchors.centerIn: parent
-                    source: "image://icons/" + encodeURIComponent(model.appId)
-                    sourceSize: Qt.size(64, 64)
-                    fillMode: Image.PreserveAspectFit
-                    smooth: true
-                    visible: status === Image.Ready
-
-                    // shrink while pressed, spring back on release
-                    scale: itemMouse.pressed ? 0.85 : 1.0
-                    Behavior on scale {
-                        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
-                    }
-                }
-
-                // fallback tile when no themed icon was found
-                Rectangle {
-                    visible: iconImage.status !== Image.Ready
-                    width: taskItem.iconSize
-                    height: taskItem.iconSize
-                    anchors.centerIn: parent
-                    radius: 5
-                    color: taskbarColor.hash(model.appId)
-
-                    // shrink while pressed, spring back on release
-                    scale: itemMouse.pressed ? 0.85 : 1.0
-                    Behavior on scale {
-                        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
-                    }
-                    Text {
-                        anchors.centerIn: parent
-                        text: model.appId.charAt(0).toUpperCase()
-                        color: "#ffffff"
-                        font.pixelSize: 14
-                        font.bold: true
-                    }
-                }
-
-                // (no tooltip: hovering an icon must not show the app name)
-
-                MouseArea {
-                    id: itemMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                    onClicked: (mouse) => {
-                        if (mouse.button === Qt.RightButton) {
-                            contextMenu.openFor(model.id, taskItem)
-                        } else {
-                            contextMenu.closeMenu()
-                            // Windows behaviour: clicking a focused icon minimizes it
-                            if (taskItem.focused)
-                                bar.minimizeWindow(model.id)
-                            else
-                                bar.activateWindow(model.id)
-                            closeLauncher()
-                        }
-                    }
-                }
-            }
+        // ---- running windows (one icon per window) + task context menu ----
+        AppIcons {
+            id: appIcons
+            barWindow: win
         }
 
         // ---- flexible spacer: keeps the tray + clock pinned right ----
@@ -194,552 +83,37 @@ Window {
             Layout.preferredHeight: barHeight
         }
 
-        // ---- system tray (StatusNotifier items: fcitx5, QQ, WeChat ...) ----
+        // ---- tray + status + clock, grouped so the gap on both sides of the
+        //      status pill stays symmetric (barCfgStatusGap) ----------------
         Row {
             Layout.preferredHeight: barHeight
-            spacing: 2
-            visible: trayModel.count > 0
+            spacing: barCfgStatusGap
 
-            Repeater {
-                model: trayModel
-                delegate: Item {
-                    width: 32
-                    height: barHeight
-
-                    // hover background: same pill as the app icons
-                    LiquidGlass {
-                        anchors.centerIn: parent
-                        size: 28
-                        hovered: trayMouse.containsMouse
-                    }
-                    Image {
-                        id: trayIcon
-                        anchors.centerIn: parent
-                        width: 19
-                        height: 19
-                        source: model.icon
-                        sourceSize: Qt.size(48, 48)
-                        fillMode: Image.PreserveAspectFit
-                        smooth: true
-
-                        // shrink 3 px while pressed (19 -> 16), spring back
-                        // on release
-                        scale: trayMouse.pressed ? 16.0 / 19.0 : 1.0
-                        Behavior on scale {
-                            NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
-                        }
-
-                        // Message notification: gentle 1 Hz blink while the
-                        // item wants attention (brief dim, mostly bright).
-                        // opacity is a plain binding - the animation drives
-                        // blinkOpacity, not opacity itself - so the icon
-                        // snaps back to fully opaque the instant attention
-                        // ends, even mid-fade (no stuck grey icon).
-                        property real blinkOpacity: 1.0
-                        opacity: model.attention ? blinkOpacity : 1.0
-
-                        SequentialAnimation {
-                            id: blinkAnim
-                            running: model.attention
-                            loops: Animation.Infinite
-                            NumberAnimation {
-                                target: trayIcon
-                                property: "blinkOpacity"
-                                to: 0.15; duration: 120
-                                easing.type: Easing.OutQuad
-                            }
-                            NumberAnimation {
-                                target: trayIcon
-                                property: "blinkOpacity"
-                                to: 1.0; duration: 880
-                                easing.type: Easing.InQuad
-                            }
-                        }
-                    }
-                    MouseArea {
-                        id: trayMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        acceptedButtons: Qt.LeftButton | Qt.RightButton
-                        onClicked: (mouse) => {
-                            // Left click activates the app; right click shows
-                            // the app's own menu via the dbusmenu protocol.
-                            if (mouse.button === Qt.RightButton)
-                                contextMenu.trayOpenFor(index, trayIcon)
-                            else
-                                trayModel.activate(index)
-                        }
-                    }
-                }
+            // ---- system tray + tray menu ----------------
+            Tray {
+                id: tray
+                barWindow: win
             }
-        }
 
-        // ---- clock: time above date, Win11 style (no seconds) ----
-        Item {
-            implicitWidth: clockRow.implicitWidth + 20
-            Layout.preferredHeight: barHeight
-
-            LiquidGlass {                      // hover feedback: same pill as app icons
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                height: 36
-                hovered: clockMouse.containsMouse
-            }
-            Column {
-                id: clockRow
-                anchors.right: parent.right
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 1
-                width: Math.max(timeText.implicitWidth, dateText.implicitWidth)
-
-                Text {
-                    id: timeText
-                    width: parent.width
-                    text: Qt.formatTime(new Date(), "HH:mm")
-                    color: "#626880"
-                    font.pixelSize: 12
-                    font.weight: Font.Bold
-                    horizontalAlignment: Text.AlignRight
-                }
-                Text {
-                    id: dateText
-                    width: parent.width
-                    text: Qt.formatDate(new Date(), "yyyy/M/d")
-                    color: "#626880"
-                    font.pixelSize: 11
-                    font.weight: Font.Bold
-                    horizontalAlignment: Text.AlignRight
-                }
-            }
-            MouseArea {
-                id: clockMouse
-                anchors.fill: parent
-                hoverEnabled: true
-            }
-            Timer {
-                interval: 1000
-                running: true
-                repeat: true
-                onTriggered: {
-                    timeText.text = Qt.formatTime(new Date(), "HH:mm")
-                    dateText.text = Qt.formatDate(new Date(), "M/d/yyyy")
-                }
+            // ---- status (volume/battery/network/bluetooth) + clock + quick settings ----
+            StatusBar {
+                id: statusBar
+                barWindow: win
             }
         }
     }
 
-    // ---- task icon context menu: full-screen overlay window, see main.cpp ----
-    //      Positioned near the cursor; any click outside the panel closes it
-    //      (same architecture as the launcher).
-    Window {
-        id: contextMenu
-        objectName: "contextMenuWindow"
-        visible: false
-        flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        color: "transparent"
-
-        width: Screen.width
-        height: Screen.height
-
-        // real logical size, see the launcher's note on fractional scales.
-        // The bar window (win) is always configured by the compositor with
-        // the true logical width, while this overlay's own width only settles
-        // after its first show - so derive both from win.width.
-        readonly property real trueWidth: win.width
-        readonly property real trueHeight: Screen.height * win.width / Screen.width
-
-        property int windowId: -1
-
-        function openFor(id, anchor) {
-            windowId = id
-            // Windows-style jump-list placement: above the icon, horizontally
-            // centered on it (below the icon when the bar sits at the top).
-            // Coordinates are in this overlay's (global) space: the bar spans
-            // the full width; at the bottom its top edge sits
-            // (trueHeight - win.height) logical px from the screen top.
-            var p = anchor.mapToItem(win.contentItem, 0, 0)
-            menuPanel.x = Math.round(p.x + (anchor.width - menuPanel.width) / 2)
-            var gy = (barCfgAtTop ? 0 : contextMenu.trueHeight - win.height) + p.y
-            menuPanel.y = barCfgAtTop
-                          ? Math.round(gy + anchor.height + 6)
-                          : Math.round(gy - menuPanel.height - 6)
-            // keep the panel fully on screen
-            menuPanel.x = Math.max(4, Math.min(menuPanel.x,
-                contextMenu.trueWidth - menuPanel.width - 4))
-            menuPanel.y = Math.max(4, Math.min(menuPanel.y,
-                contextMenu.trueHeight - menuPanel.height - 4))
-            // Win11-style pop-in
-            menuPanel.opacity = 0
-            menuPanel.scale = 0.95
-            trayMenuPanel.visible = false
-            menuPanel.visible = true
-            contextMenu.visible = true
-            menuAnim.start()
-        }
-        function closeMenu() { visible = false }
-
-        // click-catcher: any click outside the panel closes the menu
-        MouseArea {
-            anchors.fill: parent
-            acceptedButtons: Qt.LeftButton | Qt.RightButton
-            onClicked: contextMenu.closeMenu()
-        }
-
-        ParallelAnimation {
-            id: menuAnim
-            NumberAnimation { target: menuPanel; property: "opacity"; to: 1; duration: 140; easing.type: Easing.OutCubic }
-            NumberAnimation { target: menuPanel; property: "scale"; to: 1; duration: 140; easing.type: Easing.OutCubic }
-        }
-
-        // Win11-style context menu panel
-        Rectangle {
-            id: menuPanel
-            width: 150
-            height: 3 * 34 + 2 * 2 + 8      // 3 items × 34 + spacing + margins
-            radius: 8
-            color: Qt.rgba(barCfgMenuBg.r, barCfgMenuBg.g, barCfgMenuBg.b, barCfgMenuBg.a)
-            border.color: "#55666666"
-            border.width: 1
-            opacity: 0
-            scale: 0.95
-
-            Column {
-                anchors.fill: parent
-                anchors.margins: 4
-                spacing: 2
-
-                Repeater {
-                    model: [
-                        { text: qsTr("关闭"), act: "close" },
-                        { text: qsTr("最大化"), act: "max" },
-                        { text: qsTr("最小化"), act: "min" }
-                    ]
-                    delegate: Rectangle {
-                        width: menuPanel.width - 8
-                        height: 34
-                        radius: 5
-                        color: menuItemMouse.containsMouse ? Qt.rgba(barCfgActiveBg.r, barCfgActiveBg.g, barCfgActiveBg.b, barCfgActiveBg.a) : "transparent"
-                        Text {
-                            anchors.left: parent.left
-                            anchors.leftMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: modelData.text
-                            color: "#ffffff"
-                            font.pixelSize: 13
-                        }
-                        MouseArea {
-                            id: menuItemMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            onClicked: {
-                                var id = contextMenu.windowId
-                                contextMenu.closeMenu()
-                                if (modelData.act === "close")
-                                    bar.closeWindow(id)
-                                else if (modelData.act === "max")
-                                    bar.maximizeWindow(id)
-                                else
-                                    bar.minimizeWindow(id)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ---- tray icon context menu: the app's own menu via the SNI Menu
-        //      property / com.canonical.dbusmenu protocol ----
-        property int trayItemIndex: -1
-        property var trayStack: []
-
-        function trayOpenFor(index, anchor) {
-            trayItemIndex = index
-            trayStack = []
-            if (!trayModel.fetchMenu(index))
-                return
-            trayShowItems(trayModel.menuItems(index, 0))
-            var p = anchor.mapToItem(win.contentItem, 0, 0)
-            trayMenuPanel.x = Math.round(p.x + (anchor.width - trayMenuPanel.width) / 2)
-            positionTrayMenu()
-            trayMenuPanel.opacity = 0
-            trayMenuPanel.scale = 0.95
-            menuPanel.visible = false
-            trayMenuPanel.visible = true
-            contextMenu.visible = true
-            trayMenuAnim.start()
-        }
-        function trayShowItems(items) {
-            trayListModel.clear()
-            if (trayStack.length > 0)
-                trayListModel.append({ id: -1, label: qsTr("← 返回"), enabled: true,
-                                       type: "", hasChildren: false, isBack: true })
-            for (var i = 0; i < items.length; i++)
-                trayListModel.append(items[i])
-        }
-        function positionTrayMenu() {
-            // Anchor to the bar edge (6 px gap) using the panel's CURRENT
-            // height, then clamp into the screen.  Must run after every
-            // content change: trayOpenSubmenu/trayGoBack change the item
-            // count, so a stale y would otherwise leave the panel over the
-            // bar or off-screen.
-            trayMenuPanel.y = barCfgAtTop
-                ? Math.round(win.height + 6)
-                : Math.round(contextMenu.trueHeight - win.height - trayMenuPanel.height - 6)
-            trayMenuPanel.y = Math.max(4, Math.min(trayMenuPanel.y,
-                contextMenu.trueHeight - trayMenuPanel.height - 4))
-            trayMenuPanel.x = Math.max(4, Math.min(trayMenuPanel.x,
-                contextMenu.trueWidth - trayMenuPanel.width - 4))
-        }
-        function trayOpenSubmenu(parentId) {
-            trayStack.push(parentId)
-            trayShowItems(trayModel.menuItems(trayItemIndex, parentId))
-            positionTrayMenu()
-        }
-        function trayGoBack() {
-            if (trayStack.length === 0)
-                return
-            trayStack.pop()
-            var parent = trayStack.length > 0 ? trayStack[trayStack.length - 1] : 0
-            trayShowItems(trayModel.menuItems(trayItemIndex, parent))
-            positionTrayMenu()
-        }
-
-        ListModel { id: trayListModel }
-
-        ParallelAnimation {
-            id: trayMenuAnim
-            NumberAnimation { target: trayMenuPanel; property: "opacity"; to: 1; duration: 140; easing.type: Easing.OutCubic }
-            NumberAnimation { target: trayMenuPanel; property: "scale"; to: 1; duration: 140; easing.type: Easing.OutCubic }
-        }
-
-        Rectangle {
-            id: trayMenuPanel
-            visible: false
-            width: 180
-            height: trayListModel.count * 34 + 2 * Math.max(0, trayListModel.count - 1) + 8
-            radius: 8
-            color: Qt.rgba(barCfgMenuBg.r, barCfgMenuBg.g, barCfgMenuBg.b, barCfgMenuBg.a)
-            border.color: "#55666666"
-            border.width: 1
-            opacity: 0
-            scale: 0.95
-            z: 2
-
-            Column {
-                anchors.fill: parent
-                anchors.margins: 4
-                spacing: 2
-
-                Repeater {
-                    model: trayListModel
-                    delegate: Item {
-                        width: trayMenuPanel.width - 8
-                        height: 34
-
-                        Rectangle {
-                            visible: model.type === "separator"
-                            anchors.left: parent.left
-                            anchors.leftMargin: 10
-                            anchors.right: parent.right
-                            anchors.rightMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            height: 1
-                            color: "#33ffffff"
-                        }
-                        Rectangle {
-                            visible: model.type !== "separator"
-                            anchors.fill: parent
-                            radius: 5
-                            color: trayItemMouse.containsMouse && model.enabled ? Qt.rgba(barCfgActiveBg.r, barCfgActiveBg.g, barCfgActiveBg.b, barCfgActiveBg.a) : "transparent"
-                        }
-                        Text {
-                            visible: model.type !== "separator"
-                            anchors.left: parent.left
-                            anchors.leftMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: model.label
-                            color: model.enabled ? "#ffffff" : "#66ffffff"
-                            font.pixelSize: 13
-                        }
-                        Text {
-                            visible: model.type !== "separator" && model.hasChildren
-                            anchors.right: parent.right
-                            anchors.rightMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "›"
-                            color: "#aaffffff"
-                            font.pixelSize: 16
-                        }
-                        MouseArea {
-                            id: trayItemMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            onClicked: {
-                                if (model.type === "separator") return
-                                if (model.id === -1 || model.isBack) { contextMenu.trayGoBack(); return }
-                                if (model.hasChildren) { contextMenu.trayOpenSubmenu(model.id); return }
-                                var idx = contextMenu.trayItemIndex
-                                // close only when the item actually triggered:
-                                // a failed Event keeps the menu open so the
-                                // user can retry instead of it "dying"
-                                if (trayModel.triggerMenu(idx, model.id))
-                                    contextMenu.closeMenu()
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // Popup coordination: the popups are full-screen overlays, so only one
+    // should be visible at a time.  Each component calls closeAllPopups()
+    // before opening its own, and closeLauncher() when a task icon is clicked.
+    function closeAllPopups() {
+        if (winStart) winStart.closePopup()
+        if (appIcons) appIcons.closePopup()
+        if (tray) tray.closePopup()
+        if (statusBar) statusBar.closePopup()
     }
-
-    // ---- launcher (start menu): full-screen layer surface, see main.cpp ----
-    //      The panel sits under the win icon; a transparent click-catcher
-    //      covers the rest of the screen so any outside click closes it.
-    Window {
-        id: launcher
-        objectName: "launcherWindow"
-        visible: false
-        flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        color: "transparent"
-
-        width: Screen.width
-        height: Screen.height
-
-        // The compositor configures this overlay at the output's real
-        // logical size.  With a fractional output scale (e.g. 1.75) Qt
-        // rounds Screen.* up to the next integer scale (2.0), so Screen
-        // reports the wrong logical size; the bar window's configured width
-        // is authoritative, so re-derive the height from the same ratio.
-        readonly property real trueWidth: win.width
-        readonly property real trueHeight: Screen.height * win.width / Screen.width
-
-        // 3 rows x 4 columns, 88x96px cells
-        property int launcherCols: 4
-        property int launcherRows: 3
-        property int launcherCellW: 88
-        property int launcherCellH: 96
-        property int launcherPad: 10
-        property bool hadFocus: false
-
-        // close when the popup loses keyboard focus (after having had it)
-        onActiveChanged: {
-            if (active)
-                hadFocus = true
-            else if (hadFocus)
-                closeLauncher()
-        }
-        onClosing: closeLauncher()
-
-        // click-catcher: any click outside the panel (desktop, other windows,
-        // the taskbar itself) closes the menu - works without focus events
-        MouseArea {
-            anchors.fill: parent
-            acceptedButtons: Qt.LeftButton | Qt.RightButton
-            onClicked: closeLauncher()
-        }
-
-        Rectangle {                          // panel chrome: same bg as the popup menus (menuBg)
-            // x follows the bar's left edge (bar is centred when fixed-width)
-            x: (launcher.trueWidth - win.width) / 2 + 6
-            // below the bar when at top, above it when at the bottom
-            y: barCfgAtTop ? win.height + 6 : launcher.trueHeight - win.height - height - 6
-            width: launcher.launcherCols * launcher.launcherCellW + 2 * launcher.launcherPad
-            height: launcher.launcherRows * launcher.launcherCellH + 2 * launcher.launcherPad
-            radius: win.barRadius
-            color: Qt.rgba(barCfgMenuBg.r, barCfgMenuBg.g, barCfgMenuBg.b, barCfgMenuBg.a)
-            border.color: "#55666666"
-            border.width: 1
-
-            GridView {
-                id: appGrid
-                anchors.fill: parent
-                anchors.margins: launcher.launcherPad
-                clip: true
-                model: desktopApps
-                cellWidth: launcher.launcherCellW
-                cellHeight: launcher.launcherCellH
-                focus: true
-                Keys.onEscapePressed: closeLauncher()   // close the start menu
-
-                ScrollBar.vertical: ScrollBar {   // thin scrollbar, only when needed
-                    width: 3
-                    policy: ScrollBar.AsNeeded
-                    interactive: true
-                    contentItem: Rectangle {
-                        implicitWidth: 3
-                        radius: 1.5
-                        color: "#99ffffff"
-                    }
-                    background: Item {}
-                }
-
-                delegate: Item {
-                    width: appGrid.cellWidth
-                    height: appGrid.cellHeight
-
-                    Rectangle {              // hover feedback: same as taskbar icons
-                        anchors.fill: parent
-                        anchors.margins: 2
-                        radius: 4
-                        color: appMouse.containsMouse ? "#26ffffff" : "transparent"
-                    }
-
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 5
-
-                        Image {              // themed icon
-                            id: appIcon
-                            width: 44
-                            height: 44
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            source: model.icon
-                            sourceSize: Qt.size(64, 64)
-                            fillMode: Image.PreserveAspectFit
-                            smooth: true
-                            visible: status === Image.Ready
-                        }
-                        Rectangle {          // fallback tile when no icon was found
-                            visible: appIcon.status !== Image.Ready
-                            width: 44
-                            height: 44
-                            radius: 10
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            color: taskbarColor.hash(model.name)
-                            Text {
-                                anchors.centerIn: parent
-                                text: model.name.charAt(0).toUpperCase()
-                                color: "#ffffff"
-                                font.pixelSize: 18
-                                font.bold: true
-                            }
-                        }
-                        Text {               // app name
-                            width: launcher.launcherCellW - 8
-                            text: model.name
-                            horizontalAlignment: Text.AlignHCenter
-                            elide: Text.ElideRight
-                            maximumLineCount: 1
-                            color: "#ffffff"
-                            font.pixelSize: 11
-                        }
-                    }
-
-                    MouseArea {
-                        id: appMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onClicked: {
-                            bar.launchApp(model.exec)   // start the app from Exec=
-                            closeLauncher()
-                        }
-                    }
-                }
-            }
-        }
+    function closeLauncher() {
+        if (winStart) winStart.closePopup()
     }
 
     // ---- debug panel (BAR_DEBUG=1 or click the status dot) ----
@@ -770,39 +144,34 @@ Window {
         }
     }
 
-    // deterministic colour from a string, used for fallback tiles
-    QtObject {
-        id: taskbarColor
-        function hash(s) {
-            var h = 0
-            for (var i = 0; i < s.length; i++)
-                h = (h * 31 + s.charCodeAt(i)) % 360
-            return Qt.hsla(h / 360, 0.45, 0.42, 1)
+    // Win11-style toggle switch used in the quick-settings panel
+    component ToggleSwitch: Item {
+        property bool on: false
+
+        width: 36
+        height: 20
+
+        Rectangle {   // track
+            anchors.fill: parent
+            radius: height / 2
+            color: parent.on ? "#3a9b5f" : "#5a5a5a"
+            Behavior on color { ColorAnimation { duration: 120 } }
+        }
+        Rectangle {   // knob
+            width: 16
+            height: 16
+            radius: 8
+            color: "#eeeeee"
+            x: parent.on ? parent.width - width - 2 : 2
+            y: (parent.height - height) / 2
+            Behavior on x { NumberAnimation { duration: 120 } }
         }
     }
 
-    // ---------------------------------------------------------------- helpers
-    function openLauncher() {
-        desktopApps.reload()              // pick up newly installed apps
-        contextMenu.closeMenu()
-        launcher.hadFocus = false
-        launcher.visible = true
-        launcher.requestActivate()
-    }
-    function closeLauncher() {
-        // Reset hadFocus too: Qt may deliver the deactivate event caused by
-        // this hide AFTER the user reopens the launcher, and a stale
-        // hadFocus=true would make onActiveChanged close it again right away
-        // (the "click twice to reopen" bug).
-        launcher.hadFocus = false
-        launcher.visible = false
-    }
-
-    // hide the launcher together with the bar (e.g. a window went fullscreen)
+    // hide the launcher and any open popup together with the bar
+    // (e.g. a window went fullscreen)
     onVisibleChanged: {
-        if (!visible) {
-            closeLauncher()
-            contextMenu.closeMenu()
-        }
+        if (!visible)
+            closeAllPopups()
     }
 }
