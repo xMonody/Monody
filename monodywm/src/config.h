@@ -81,6 +81,8 @@ static const struct config_app_shortcut config_app_shortcuts[] = {
 	{ MODKEY, XKB_KEY_w, "wezterm", NULL },
 	{ MODKEY, XKB_KEY_k, "kitty",   NULL },
 	{ MODKEY, XKB_KEY_q, "qq",      NULL },
+	{ MODKEY1, XKB_KEY_p, "rofi -show drun",      NULL },
+	{ MODKEY, XKB_KEY_p, "rofi -show drun",       NULL },
 };
 
 /* 强制「无装饰」窗口（合成器接管边框）：这些客户端自己画 CSD，但它们的

@@ -254,6 +254,15 @@ struct layer_surface {
 	bool last_mapped;
 	bool has_last_state;
 
+	/* keyboard focus: a layer surface that asked for keyboard interactivity
+	 * (rofi / wofi launcher overlay, ...) holds the seat's keyboard as long
+	 * as it stays mapped.  last_keyboard_interactive remembers the previous
+	 * commit's interactivity so focus is only grabbed on the map /
+	 * interactivity transition, never re-stolen on later commits (a bar
+	 * that re-renders every second must not yank the keyboard). */
+	enum zwlr_layer_surface_v1_keyboard_interactivity last_keyboard_interactive;
+	bool keyboard_focused;
+
 	struct wl_listener destroy;
 	struct wl_listener commit;
 };
@@ -308,6 +317,9 @@ struct server {
 	struct wl_list toplevels;      /* struct toplevel.link */
 	struct wl_list layer_surfaces; /* struct layer_surface.link */
 	struct toplevel *focused;
+	struct layer_surface *layer_focused; /* layer surface currently holding the
+					       seat's keyboard (rofi overlay, ...);
+					       NULL while a toplevel has the keyboard */
 
 	/* input method relay (fcitx5 / ibus) */
 	struct wl_list imes;            /* struct ime.link */
@@ -318,6 +330,11 @@ struct server {
 							 * talks to (NULL when none) */
 	struct wlr_surface *ime_focused_surface; /* surface owning text input */
 	struct wl_listener ime_focused_surface_destroy;
+	/* raw keycode (evdev numbering) of the key the compositor just consumed
+	 * with a global shortcut (0 = none): set by input.c before ime.c's grab
+	 * listener runs for the same event, so a key that fired a shortcut is
+	 * never also forwarded to the input method's keyboard grab */
+	uint32_t consumed_keycode;
 
 	/* IPC socket for status bars (JSON events) */
 	int ipc_fd;
@@ -508,6 +525,9 @@ bool place_toplevel(struct server *server, struct toplevel *tl);
 void get_work_area(struct server *server, struct wlr_output *output,
 	struct wlr_box *area);
 void server_new_layer_surface(struct wl_listener *listener, void *data);
+/* a toplevel took the keyboard: the interactive layer surface (if any)
+ * no longer holds it */
+void layer_keyboard_clear(struct server *server);
 
 /* ---- output.c: monitors + output management ---- */
 void server_new_output(struct wl_listener *listener, void *data);

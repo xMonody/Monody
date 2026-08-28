@@ -359,6 +359,14 @@ static void ime_keyboard_grab_key(struct wl_listener *listener, void *data) {
 			ime->input_method->keyboard_grab == NULL) {
 		return;
 	}
+	/* a key the compositor consumed with a global shortcut must not also
+	 * be handed to the IM (input.c marks it before this listener runs;
+	 * keyboard_key is registered before the grab's for keyboards attached
+	 * before the IM connected) */
+	if (ime->server->consumed_keycode == event->keycode) {
+		ime->server->consumed_keycode = 0;
+		return;
+	}
 	/* never forward a release without the matching forwarded press */
 	if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED &&
 			!ime_key_forwarded(ime, event->keycode)) {

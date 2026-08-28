@@ -26,7 +26,7 @@ mkdir -p "$RUNDIR/config"
 # 1. start the compositor headless with cursor debug logging
 XDG_CONFIG_HOME="$RUNDIR/config" XDG_RUNTIME_DIR="$RUNDIR" \
   WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_DEBUG=1 \
-  ./build/xmonodywm > "$RUNDIR/wm.log" 2>&1 &
+  ./build/monodywm > "$RUNDIR/wm.log" 2>&1 &
 WM=$!
 sleep 2
 

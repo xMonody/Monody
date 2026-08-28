@@ -226,6 +226,13 @@ add_executable(test-ime-relay test-ime-relay.c)
 target_include_directories(test-ime-relay PRIVATE ${PROTOCOL_GEN_DIR})
 target_link_libraries(test-ime-relay PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
 
+# grab-shortcut test: while the IM holds the keyboard grab (cursor in a
+# text field, fcitx5 composing), a global shortcut (Ctrl+Alt+P -> rofi)
+# must still fire and the consumed key must not reach the IM grab
+add_executable(test-grab-shortcut test-grab-shortcut.c)
+target_include_directories(test-grab-shortcut PRIVATE ${PROTOCOL_GEN_DIR})
+target_link_libraries(test-grab-shortcut PRIVATE protocol_stubs PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
+
 # fcitx5 end-to-end: app + virtual keyboard driver (needs a real fcitx5)
 add_executable(test-ime-app test-ime-app.c)
 target_include_directories(test-ime-app PRIVATE ${PROTOCOL_GEN_DIR})

@@ -544,8 +544,15 @@ void focus_toplevel(struct server *server, struct toplevel *tl) {
 			!tl->xdg_toplevel->base->surface->mapped) {
 		return;
 	}
+	bool layer_held = server->layer_focused != NULL;
+	/* a toplevel took the keyboard: an interactive layer surface (rofi
+	 * overlay, ...) no longer holds it.  Done before the prev == tl early
+	 * return so clicking the already-focused window also pulls the
+	 * keyboard back from a launcher overlay (the notify_enter below then
+	 * moves the seat keyboard off the layer surface). */
+	layer_keyboard_clear(server);
 	struct toplevel *prev = server->focused;
-	if (prev == tl) {
+	if (prev == tl && !layer_held) {
 		toplevel_raise(server, tl);
 		return;
 	}

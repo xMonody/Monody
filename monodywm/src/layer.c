@@ -12,6 +12,7 @@
 
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/util/log.h>
 
 static int scene_layer_index(enum zwlr_layer_shell_v1_layer layer) {
 	switch (layer) {
@@ -133,9 +134,97 @@ static void arrange_for_layer_surface(struct layer_surface *ls) {
 	}
 }
 
+/* give the seat's keyboard focus to a mapped layer surface that asked for
+ * keyboard interactivity (rofi / wofi launcher, ...).  server->focused is
+ * deliberately left untouched: the toplevel stays "the focused window" (its
+ * border keeps the focused color) and regains the keyboard when the overlay
+ * goes away. */
+static void layer_surface_keyboard_focus(struct server *server,
+		struct layer_surface *ls) {
+	struct wlr_layer_surface_v1 *layer_surface = ls->layer_surface;
+	if (server->layer_focused == ls) {
+		return;
+	}
+	ls->keyboard_focused = true;
+	server->layer_focused = ls;
+	wlr_log(WLR_DEBUG, "layer: keyboard focus -> %s surface %p",
+		layer_surface->namespace ? layer_surface->namespace : "(null)",
+		(void *)layer_surface->surface);
+	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+	if (keyboard != NULL) {
+		wlr_seat_keyboard_notify_enter(server->seat,
+			layer_surface->surface, keyboard->keycodes,
+			keyboard->num_keycodes, &keyboard->modifiers);
+	} else {
+		wlr_seat_keyboard_notify_enter(server->seat,
+			layer_surface->surface, NULL, 0, NULL);
+	}
+	ime_set_focus(server, layer_surface->surface);
+}
+
+/* the layer surface no longer holds the keyboard (unmapped / destroyed /
+ * interactivity turned off): hand it back to the previously focused
+ * toplevel, or clear it when no toplevel remains */
+static void layer_surface_keyboard_unfocus(struct server *server,
+		struct layer_surface *ls) {
+	if (server->layer_focused != ls) {
+		return;
+	}
+	ls->keyboard_focused = false;
+	server->layer_focused = NULL;
+	wlr_log(WLR_DEBUG, "layer: keyboard focus released (surface %p)",
+		(void *)ls->layer_surface->surface);
+	struct toplevel *tl = server->focused;
+	if (tl != NULL && tl->xdg_toplevel->base != NULL &&
+			tl->xdg_toplevel->base->surface->mapped) {
+		struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+		if (keyboard != NULL) {
+			wlr_seat_keyboard_notify_enter(server->seat,
+				tl->xdg_toplevel->base->surface, keyboard->keycodes,
+				keyboard->num_keycodes, &keyboard->modifiers);
+		} else {
+			wlr_seat_keyboard_notify_enter(server->seat,
+				tl->xdg_toplevel->base->surface, NULL, 0, NULL);
+		}
+		ime_set_focus(server, tl->xdg_toplevel->base->surface);
+	} else {
+		wlr_seat_keyboard_clear_focus(server->seat);
+		ime_set_focus(server, NULL);
+	}
+}
+
+void layer_keyboard_clear(struct server *server) {
+	if (server->layer_focused != NULL) {
+		server->layer_focused->keyboard_focused = false;
+		server->layer_focused = NULL;
+	}
+}
+
 static void layer_surface_commit(struct wl_listener *listener, void *data) {
 	struct layer_surface *ls = wl_container_of(listener, ls, commit);
+	struct wlr_layer_surface_v1 *layer_surface = ls->layer_surface;
+	struct wlr_layer_surface_v1_state *st = &layer_surface->current;
+
+	bool mapped = layer_surface->surface->mapped;
+	bool interactive = st->keyboard_interactive !=
+		ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE;
+	/* focus is grabbed only on the map / interactivity transition, so a
+	 * layer surface that keeps committing (a bar redrawing every second)
+	 * never yanks the keyboard away from a window */
+	bool became_interactive = mapped && interactive &&
+		(!ls->has_last_state || !ls->last_mapped ||
+		 ls->last_keyboard_interactive ==
+			ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+
 	configure_layer_surface(ls);
+
+	if (became_interactive) {
+		layer_surface_keyboard_focus(ls->server, ls);
+	} else if (ls->keyboard_focused && (!mapped || !interactive)) {
+		layer_surface_keyboard_unfocus(ls->server, ls);
+	}
+	ls->last_keyboard_interactive = st->keyboard_interactive;
+
 	/* a bar appearing / resizing shrinks the work area: move existing
 	 * windows back out of its exclusive zone instead of letting it cover
 	 * them */
@@ -146,6 +235,11 @@ static void layer_surface_commit(struct wl_listener *listener, void *data) {
 
 static void layer_surface_destroy(struct wl_listener *listener, void *data) {
 	struct layer_surface *ls = wl_container_of(listener, ls, destroy);
+	/* a launcher overlay holding the keyboard is going away: give it back
+	 * to the previously focused toplevel */
+	if (ls->keyboard_focused) {
+		layer_surface_keyboard_unfocus(ls->server, ls);
+	}
 	wl_list_remove(&ls->destroy.link);
 	wl_list_remove(&ls->commit.link);
 	wl_list_remove(&ls->link);
