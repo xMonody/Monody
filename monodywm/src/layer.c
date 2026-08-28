@@ -123,6 +123,16 @@ static bool layer_exclusive_zone_changed(struct layer_surface *ls) {
  * windows back out of its area.  A bar created without an output spans
  * every output, so all of them are re-arranged. */
 static void arrange_for_layer_surface(struct layer_surface *ls) {
+	/* Only surfaces with an exclusive zone change the work area.  Menus /
+	 * launcher overlays (and any zone-less surface) must not re-arrange:
+	 * their map/unmap would re-fit maximized windows from their stale
+	 * current.maximized state, snapping a window that was just restored
+	 * (its restore configure is still unacked) right back to the
+	 * maximized box - the classic "flash and stay maximized" from a
+	 * taskbar menu built as a layer-shell overlay. */
+	if (ls->layer_surface->current.exclusive_zone <= 0) {
+		return;
+	}
 	struct wlr_output *output = ls->layer_surface->output;
 	if (output != NULL) {
 		arrange_toplevels_work_area(ls->server, output);
