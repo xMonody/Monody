@@ -33,8 +33,10 @@
 #define CONFIG_SHADOW_WIDTH      20          /* 窗口阴影宽度 (px) */
 #define CONFIG_SHADOW_ALPHA      0.2f        /* 窗口阴影不透明度 0.0-1.0 */
 
-#define CONFIG_TITLEBAR_HEIGHT  8           /* 移动窗口标题栏范围 */
-#define CONFIG_EDGE_THICKNESS   8           /* 调整窗口大小边框范围 */
+#define CONFIG_TITLEBAR_HEIGHT  6           /* 移动窗口标题栏范围 */
+#define CONFIG_EDGE_THICKNESS   6           /* 调整窗口大小边框范围 */
+#define CONFIG_RESIZE_DRAW_CONTENTS 1        /* 1 = 实时 resize 客户端; 0 = 拖动时只画轮廓、松开再应用 (边缘跟手) */
+#define CONFIG_RESIZE_FINAL_TIMEOUT_MS 500  /* outline 模式: 松开后客户端迟迟不提交最终尺寸时的强制结束宽限 */
 
 #define CONFIG_DOUBLE_CLICK_NS (400 * 1000000L) /* double-click window (ns) */
 #define CONFIG_LONG_PRESS_NS (350 * 1000000L) /* holding the strip this long grabs the window (ns) */
@@ -100,6 +102,7 @@ static const char *const config_force_undecorated[] = {
 	"org.mozilla",
 	"code",                 /* VS Code / VS Codium */
 	"com.visualstudio.code", /* 官方 VS Code */
+    "clash-verge",
 	NULL,
 };
 

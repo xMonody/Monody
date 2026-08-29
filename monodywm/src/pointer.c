@@ -111,6 +111,7 @@ void begin_move(struct server *server, struct toplevel *tl,
 		return;
 	}
 	server->moving = true;
+	server->input_mode = INPUT_MODE_MOVE;
 	server->move_toplevel = tl;
 	if (tl != NULL) {
 		tl->user_moved = true; /* user move: stop auto-centering */
@@ -119,10 +120,25 @@ void begin_move(struct server *server, struct toplevel *tl,
 	server->move_ref_y = ref_y;
 	server->grab_x = ref_x - tl->scene_tree->node.x;
 	server->grab_y = ref_y - tl->scene_tree->node.y;
+	/* remember the maximized box: when the drag restores the window, the
+	 * press point's window-internal offset is mapped proportionally into
+	 * the restored box (see move_toplevel_to) */
+	server->move_max_w = 0;
+	server->move_max_h = 0;
+	if (tl->xdg_toplevel->current.maximized) {
+		struct wlr_box box;
+		toplevel_box(tl, &box);
+		server->move_max_w = box.width;
+		server->move_max_h = box.height;
+	}
 }
 
 void end_move(struct server *server) {
+	if (server->moving) {
+	}
 	server->moving = false;
+	server->input_mode = INPUT_MODE_PASSTHROUGH;
+	server->move_deferred_restore = false;
 	server->move_toplevel = NULL;
 	server->zone_toplevel = NULL;
 	server->zone_press = false;
@@ -208,15 +224,48 @@ static void move_toplevel_to(struct server *server, double lx, double ly) {
 	}
 	/* a maximized window whose move came from the client (xdg_toplevel.
 	 * move - e.g. QQ's own title bar sends it on a plain click, not just
-	 * a drag): defer the restore to the first real motion, so a mere
-	 * click never un-maximizes the window.  Only here (not in
-	 * request_move) can a click be told apart from a drag. */
+	 * a drag): defer the restore until the drag really moves, so a mere
+	 * click - or the first press of a double-click, with its few px of
+	 * hand jitter - never un-maximizes the window and yanks it across
+	 * the screen.  Only here (not in request_move) can a click be told
+	 * apart from a drag, and only once the cursor passed
+	 * CONFIG_DRAG_THRESHOLD (the zone strip gates its move on the same
+	 * threshold; without it the client title bar restored on the first
+	 * pixel of jitter and scrambled the double-click). */
 	if (tl->xdg_toplevel->current.maximized) {
+		double ddx = server->cursor->x - server->move_ref_x;
+		double ddy = server->cursor->y - server->move_ref_y;
+		if (ddx * ddx + ddy * ddy <
+				CONFIG_DRAG_THRESHOLD * CONFIG_DRAG_THRESHOLD) {
+			/* a click (or a double-click's first press) that never crossed
+			 * the drag threshold: the window stays maximized, nothing moves */
+			return;
+		}
 		restore_maximized_toplevel(tl);
-		/* re-anchor the grab on the restored window's actual box (the
-		 * maximized geometry the grab was anchored to is gone) */
-		server->grab_x = server->move_ref_x - tl->scene_tree->node.x;
-		server->grab_y = server->move_ref_y - tl->scene_tree->node.y;
+		/* re-anchor the grab by mapping the press point's offset inside
+		 * the maximized box proportionally into the restored box: the
+		 * cursor keeps gripping the same window-internal spot it pressed.
+		 * A plain absolute offset would keep it on the same pixel, which
+		 * drifts right on narrower restored windows (e.g. a press on the
+		 * centered title text of a maximized gvim would float past the
+		 * text once the window shrinks); proportional mapping lands the
+		 * cursor on the same relative spot - exactly where centered
+		 * content (title text) sits.  Do NOT re-anchor against the
+		 * restored origin: that makes the grab negative (the press point
+		 * usually lies above/left of it) and shoves the window away. */
+		if (server->move_deferred_restore && tl->has_restore_box &&
+				tl->restore_box.width > 0 && server->move_max_w > 0) {
+			server->grab_x = server->grab_x * tl->restore_box.width /
+				server->move_max_w;
+			server->grab_y = server->grab_y * tl->restore_box.height /
+				server->move_max_h;
+			/* map only once: current.maximized stays true until the client
+			 * commits the un-maximize configure, so every motion would
+			 * re-enter this branch and shrink the grab exponentially,
+			 * drifting the cursor up-left on every event */
+			server->move_max_w = 0;
+			server->move_max_h = 0;
+		}
 	}
 	/* the cursor must stay above the status bar while dragging; the
 	 * window follows it with no bottom limit (it may slide past the bar
@@ -403,6 +452,38 @@ static const char *resize_cursor_name(uint32_t edges) {
 	return "ns-resize";
 }
 
+/* ------------------------------------------------------------------ */
+/* bound buttons (like labwc): presses the compositor swallowed        */
+/* ------------------------------------------------------------------ */
+
+static bool bound_button_contains(struct bound_buttons *bb, uint32_t value) {
+	for (int i = 0; i < bb->size; i++) {
+		if (bb->values[i] == value) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void bound_button_add(struct bound_buttons *bb, uint32_t value) {
+	if (bound_button_contains(bb, value)) {
+		return;
+	}
+	if (bb->size >= BOUND_BUTTONS_MAX) {
+		return;
+	}
+	bb->values[bb->size++] = value;
+}
+
+static void bound_button_remove(struct bound_buttons *bb, uint32_t value) {
+	for (int i = 0; i < bb->size; i++) {
+		if (bb->values[i] == value) {
+			bb->values[i] = bb->values[--bb->size];
+			return;
+		}
+	}
+}
+
 static void set_cursor_override(struct server *server, const char *name) {
 	if (server->cursor_override == name) {
 		return;
@@ -427,9 +508,21 @@ void reapply_client_cursor(struct server *server) {
 			server->cursor_override);
 		return;
 	}
+	struct wlr_surface *focused =
+		server->seat->pointer_state.focused_surface;
+	/* the stored client shape is only valid while the pointer is still over
+	 * that client's surface; once the pointer moved out to empty desktop or
+	 * onto another surface, restoring it would show a stale cursor (e.g. a
+	 * resize shape the client set at the edge).  Fall through to the default
+	 * arrow below in that case. */
+	bool over_shape_client = focused != NULL &&
+		server->client_cursor_shape_client != NULL &&
+		focused->resource->client ==
+			server->client_cursor_shape_client->client;
 	if (server->client_cursor_shape != 0 &&
 			server->client_cursor_shape_client ==
-				server->seat->pointer_state.focused_client) {
+				server->seat->pointer_state.focused_client &&
+			over_shape_client) {
 		wlr_log(WLR_DEBUG, "cursor: restore-shape");
 		wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,
 			wlr_cursor_shape_v1_name(server->client_cursor_shape));
@@ -442,8 +535,6 @@ void reapply_client_cursor(struct server *server) {
 	 * fall back to the default arrow. The client draws its cursor on a
 	 * separate surface, so compare the owning clients rather than the
 	 * surfaces themselves. */
-	struct wlr_surface *focused =
-		server->seat->pointer_state.focused_surface;
 	bool over_client_surface = focused != NULL &&
 		server->client_cursor_surface != NULL &&
 		focused->resource->client ==
@@ -489,6 +580,67 @@ static struct toplevel *toplevel_nearby(struct server *server) {
 		}
 	}
 	return NULL;
+}
+
+/* the band around a window where the compositor suppresses client cursor
+ * requests.  The actual grab zone is CONFIG_EDGE_THICKNESS/2 (half inside /
+ * half outside the box), but clients detect their own edges over the full
+ * CONFIG_EDGE_THICKNESS inside the window (winit, GTK, ...).  Without the
+ * wider band a client would store its own resize shape (e.g. clash-verge's
+ * ew_resize) just outside the grab zone and get it restored stale once the
+ * cursor leaves the edge. */
+static bool cursor_in_cursor_band(struct server *server,
+		struct toplevel *tl) {
+	if (tl->minimized || tl->xdg_toplevel->base == NULL ||
+			tl->decoration_mode ==
+				WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE ||
+			tl->xdg_toplevel->current.maximized ||
+			toplevel_is_dialog(tl) || toplevel_is_fixed_size(tl)) {
+		return false;
+	}
+	struct wlr_box box;
+	toplevel_box(tl, &box);
+	if (box.width <= 0 || box.height <= 0) {
+		return false;
+	}
+	double lx = server->cursor->x;
+	double ly = server->cursor->y;
+	double in = CONFIG_EDGE_THICKNESS;        /* inside the window */
+	double out = CONFIG_EDGE_THICKNESS / 2.0; /* outside the window */
+	bool x_band = lx >= box.x - out && lx <= box.x + box.width + out;
+	bool y_band = ly >= box.y - out && ly <= box.y + box.height + out;
+	bool on_left = lx >= box.x - out && lx < box.x + in;
+	bool on_right = lx > box.x + box.width - in &&
+		lx <= box.x + box.width + out;
+	bool on_top = ly >= box.y - out && ly < box.y + in;
+	bool on_bottom = ly > box.y + box.height - in &&
+		ly <= box.y + box.height + out;
+	return (on_left && y_band) || (on_right && y_band) ||
+		(on_top && x_band) || (on_bottom && x_band);
+}
+
+/* is the cursor over the compositor's own frame zone (title strip / resize
+ * edge) of any window?  There the compositor owns the cursor, so client
+ * cursor requests are ignored (input.c) - the client still keeps pointer
+ * focus and receives motion, so its hover feedback keeps working. */
+bool pointer_over_frame_zone(struct server *server) {
+	if (pointer_over_popup(server) || pointer_over_layer_surface(server)) {
+		return false;
+	}
+	struct toplevel *tl = toplevel_at(server);
+	if (tl != NULL && !tl->minimized) {
+		return cursor_in_cursor_band(server, tl) ||
+			is_in_titlebar_zone(server, tl);
+	}
+	/* cursor outside every window: the outer half of an edge zone is still
+	 * reachable over the desktop */
+	struct toplevel *candidate;
+	wl_list_for_each(candidate, &server->toplevels, link) {
+		if (cursor_in_cursor_band(server, candidate)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 /* decide which compositor-owned cursor to show at the current position:
@@ -546,6 +698,80 @@ void update_cursor_style(struct server *server) {
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* resize outline (labwc-style)                                       */
+/* ------------------------------------------------------------------ */
+
+static void resize_outline_ensure(struct server *server) {
+	if (server->resize_outline != NULL) {
+		return;
+	}
+	server->resize_outline =
+		wlr_scene_tree_create(server->layers[LAYER_OVERLAY]);
+	/* focused border color 0x9F6680, premultiplied */
+	float color[4] = { 0.62f, 0.40f, 0.50f, 1.0f };
+	for (int i = 0; i < 4; i++) {
+		server->resize_outline_edges[i] =
+			wlr_scene_rect_create(server->resize_outline, 0, 0, color);
+	}
+}
+
+static void resize_outline_show(struct server *server, struct wlr_box *box) {
+	resize_outline_ensure(server);
+	int t = 2;
+	struct wlr_scene_rect **e = server->resize_outline_edges;
+	wlr_scene_rect_set_size(e[0], box->width, t);
+	wlr_scene_node_set_position(&e[0]->node, box->x, box->y);
+	wlr_scene_rect_set_size(e[1], box->width, t);
+	wlr_scene_node_set_position(&e[1]->node, box->x,
+		box->y + box->height - t);
+	wlr_scene_rect_set_size(e[2], t, box->height);
+	wlr_scene_node_set_position(&e[2]->node, box->x, box->y);
+	wlr_scene_rect_set_size(e[3], t, box->height);
+	wlr_scene_node_set_position(&e[3]->node, box->x + box->width - t,
+		box->y);
+	wlr_scene_node_set_enabled(&server->resize_outline->node, true);
+}
+
+static void resize_outline_hide(struct server *server) {
+	if (server->resize_outline != NULL) {
+		wlr_scene_node_set_enabled(&server->resize_outline->node, false);
+	}
+}
+
+/* outline mode: after the button release the final size is sent and the
+ * grab stays until the client commits it (so the top/left reposition and
+ * the resize cursor stay put).  A client that never commits - hung, or one
+ * ignoring the configure - would leave the grab and the resize cursor
+ * stuck forever, so a watchdog force-ends the grab. */
+static int resize_final_timeout_cb(void *data) {
+	struct server *server = data;
+	if (server->resizing && server->resize_final_pending) {
+		resize_grab_clear(server);
+	}
+	return 0;
+}
+
+static void arm_resize_final_timer(struct server *server) {
+	if (server->resize_final_timer == NULL) {
+		struct wl_event_loop *loop =
+			wl_display_get_event_loop(server->display);
+		server->resize_final_timer =
+			wl_event_loop_add_timer(loop, resize_final_timeout_cb, server);
+		if (server->resize_final_timer == NULL) {
+			return; /* no watchdog: the grab still ends on the commit */
+		}
+	}
+	wl_event_source_timer_update(server->resize_final_timer,
+		CONFIG_RESIZE_FINAL_TIMEOUT_MS);
+}
+
+static void disarm_resize_final_timer(struct server *server) {
+	if (server->resize_final_timer != NULL) {
+		wl_event_source_timer_update(server->resize_final_timer, 0);
+	}
+}
+
 void begin_resize(struct server *server, struct toplevel *tl,
 		uint32_t edges) {
 	/* never resize a maximized window */
@@ -553,16 +779,24 @@ void begin_resize(struct server *server, struct toplevel *tl,
 		return;
 	}
 	server->resizing = true;
+	server->input_mode = INPUT_MODE_RESIZE;
 	server->resize_toplevel = tl;
 	tl->user_moved = true; /* user resize: stop auto-centering */
 	server->resize_edges = edges;
+	server->resize_final_pending = false;
 	server->press_x = server->cursor->x;
 	server->press_y = server->cursor->y;
 	toplevel_box(tl, &server->resize_orig);
 	/* a grab that has not moved yet must not re-request the current size */
 	server->resize_last_w = server->resize_orig.width;
 	server->resize_last_h = server->resize_orig.height;
-	wlr_xdg_toplevel_set_resizing(tl->xdg_toplevel, true);
+	if (CONFIG_RESIZE_DRAW_CONTENTS) {
+		wlr_xdg_toplevel_set_resizing(tl->xdg_toplevel, true);
+	} else {
+		/* outline mode: show the starting box, apply the real size later */
+		server->resize_target = server->resize_orig;
+		resize_outline_show(server, &server->resize_target);
+	}
 	focus_toplevel(server, tl);
 }
 
@@ -618,15 +852,37 @@ static void update_resize(struct server *server) {
 		nh = max_h;
 	}
 
-	/* the scene node is never moved here: a top/left grab repositions it
-	 * in xdg_toplevel_commit() once the client commits the new geometry
-	 * (moving it first would render the old, still-larger buffer at the
-	 * moved position and make the opposite edge bounce); a bottom/right
-	 * grab needs no move since the top-left corner stays fixed. */
-	/* only send a configure when the target size actually changed:
-	 * wlr_xdg_toplevel_set_size always schedules one, so repeating the
-	 * same size on every motion event (sub-pixel deltas, or a client that
-	 * has not committed yet) would push a configure -> commit -> mask/
+	/* the target box: a top/left grab moves the window origin so the
+	 * opposite edge stays anchored where it was when the grab started */
+	struct wlr_box box = {
+		.x = (server->resize_edges & WLR_EDGE_LEFT) != 0
+			? orig.x + orig.width - nw : orig.x,
+		.y = (server->resize_edges & WLR_EDGE_TOP) != 0
+			? orig.y + orig.height - nh : orig.y,
+		.width = nw,
+		.height = nh,
+	};
+
+	if (!CONFIG_RESIZE_DRAW_CONTENTS) {
+		/* outline mode (labwc-style): only follow the cursor with the
+		 * outline; apply the real size once on release, so the dragged
+		 * edge never waits for the client's configure -> commit round trip
+		 * and the drag feels as tight as a window move. */
+		if (box.x == server->resize_target.x &&
+				box.y == server->resize_target.y &&
+				box.width == server->resize_target.width &&
+				box.height == server->resize_target.height) {
+			return;
+		}
+		server->resize_target = box;
+		resize_outline_show(server, &server->resize_target);
+		return;
+	}
+
+	/* live mode: only send a configure when the target size actually
+	 * changed; wlr_xdg_toplevel_set_size always schedules one, so repeating
+	 * the same size on every motion event (sub-pixel deltas, or a client
+	 * that has not committed yet) would push a configure -> commit -> mask/
 	 * border GPU re-render cycle through the client on every event.  That
 	 * synchronous per-commit GL work is what makes a resize drag stutter
 	 * (and a software cursor with it) while a move - no round trip, no
@@ -639,18 +895,54 @@ static void update_resize(struct server *server) {
 	wlr_xdg_toplevel_set_size(tl->xdg_toplevel, nw, nh);
 }
 
+void resize_grab_clear(struct server *server) {
+	server->resizing = false;
+	server->input_mode = INPUT_MODE_PASSTHROUGH;
+	server->resize_toplevel = NULL;
+	server->resize_edges = 0;
+	server->resize_final_pending = false;
+	/* a late motion between the release and the final commit can re-show
+	 * the outline; hide it here so no ghost outline survives the grab */
+	resize_outline_hide(server);
+	disarm_resize_final_timer(server);
+}
+
 void end_resize(struct server *server) {
 	if (!server->resizing) {
 		return;
 	}
-	if (server->resize_toplevel != NULL &&
-			server->resize_toplevel->xdg_toplevel->base != NULL) {
-		wlr_xdg_toplevel_set_resizing(server->resize_toplevel->xdg_toplevel,
-			false);
+	struct toplevel *tl = server->resize_toplevel;
+
+	if (tl != NULL && tl->xdg_toplevel->base != NULL) {
+		if (CONFIG_RESIZE_DRAW_CONTENTS) {
+			wlr_xdg_toplevel_set_resizing(tl->xdg_toplevel, false);
+			resize_grab_clear(server);
+			return;
+		}
+		/* outline mode: hide the outline and apply the final box.  Keep the
+		 * grab (resizing stays true) until the client commits the new
+		 * geometry, so the cursor stays resize-shaped and the top/left
+		 * reposition happens in xdg_toplevel_commit() against the committed
+		 * size (no one-frame bounce, no transient default cursor). */
+		resize_outline_hide(server);
+		struct wlr_xdg_surface *base = tl->xdg_toplevel->base;
+		if (!base->surface->mapped) {
+			resize_grab_clear(server);
+			return;
+		}
+		if (server->resize_target.width != base->geometry.width ||
+				server->resize_target.height != base->geometry.height) {
+			wlr_xdg_toplevel_set_size(tl->xdg_toplevel,
+				server->resize_target.width,
+				server->resize_target.height);
+			server->resize_final_pending = true; /* finish on commit */
+			arm_resize_final_timer(server); /* watchdog */
+		} else {
+			resize_grab_clear(server); /* size unchanged: nothing will commit */
+		}
+		return;
 	}
-	server->resizing = false;
-	server->resize_toplevel = NULL;
-	server->resize_edges = 0;
+	resize_grab_clear(server);
 }
 
 /* ------------------------------------------------------------------ */
@@ -749,6 +1041,8 @@ static void end_chord(struct server *server) {
 	disarm_chord_timer(server);
 	disarm_zone_timer(server);
 	server->moving = false;
+	server->input_mode = INPUT_MODE_PASSTHROUGH;
+	server->move_deferred_restore = false;
 	server->move_toplevel = NULL;
 	server->zone_toplevel = NULL;
 	server->zone_press = false;
@@ -800,15 +1094,11 @@ static void begin_chord(struct server *server, uint32_t button) {
 	} else {
 		server->chord_swallow_right = true;
 	}
-	/* if the held button's press was swallowed as a zone press, its
-	 * release must be swallowed as well */
-	if (server->zone_press) {
-		if (button == BTN_LEFT) {
-			server->chord_swallow_right = true;
-		} else {
-			server->chord_swallow_left = true;
-		}
-	}
+	/* NOTE: the held button's release needs no extra swallow flag here -
+	 * if its press was swallowed as a zone press it is already in
+	 * bound_buttons, and its release is swallowed either by
+	 * process_chord_button (zone_press) or by the generic release path
+	 * (was_bound). */
 
 	if (is_double_click(server, button)) {
 		/* double-clicked the other button: the action depends on which
@@ -882,6 +1172,9 @@ static void process_chord_button(struct server *server, uint32_t time_msec,
 	 * zone press and the release must stay swallowed) */
 	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
 		bool zone = server->zone_press;
+		/* a swallowed zone press was recorded in bound_buttons; clear it
+		 * here so a stale entry can never swallow a later release */
+		bound_button_remove(&server->bound_buttons, button);
 		end_chord(server);
 		if (!zone) {
 			wlr_seat_pointer_notify_button(server->seat, time_msec,
@@ -1098,10 +1391,17 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 		return;
 	}
 
-	/* a chord consumed this button's press but ended earlier (e.g. the held
-	 * button was released first): swallow the release so the client never
-	 * sees an orphan release without a matching press */
 	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		/* single decision point (labwc-style): every press the compositor
+		 * swallowed was recorded in bound_buttons, so the release reaches
+		 * the client only when it was NOT recorded. */
+		bool was_bound = bound_button_contains(&server->bound_buttons,
+			button);
+		bound_button_remove(&server->bound_buttons, button);
+
+		/* a chord consumed this button's press but ended earlier (e.g. the
+		 * held button was released first): swallow the release so the client
+		 * never sees an orphan release without a matching press */
 		if ((button == BTN_LEFT && server->chord_swallow_left) ||
 				(button == BTN_RIGHT && server->chord_swallow_right)) {
 			if (button == BTN_LEFT) {
@@ -1111,26 +1411,28 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 			}
 			return;
 		}
-	}
 
-	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
 		if (server->resizing) {
 			end_resize(server);
-			update_cursor_style(server);
-			return;
-		}
-		if (server->moving) {
-			/* end of a move (zone drag or xdg_toplevel.move) */
-			bool client_initiated = !server->zone_press;
-			end_move(server);
-			if (client_initiated) {
-				/* the client started the move from its own button press,
-				 * forward the release so it doesn't stay stuck */
+			if (!was_bound) {
+				/* client-initiated resize (xdg_toplevel.resize): its press
+				 * was forwarded, so the release must be too */
 				wlr_seat_pointer_notify_button(server->seat, time_msec,
 					button, state);
 				wlr_seat_pointer_notify_frame(server->seat);
 			}
-			/* don't leave the cursor stuck on the move cursor after the release */
+			update_cursor_style(server);
+			return;
+		}
+		if (server->moving) {
+			end_move(server);
+			if (!was_bound) {
+				/* client-initiated move (xdg_toplevel.move): its press was
+				 * forwarded, so the release must be too */
+				wlr_seat_pointer_notify_button(server->seat, time_msec,
+					button, state);
+				wlr_seat_pointer_notify_frame(server->seat);
+			}
 			update_cursor_style(server);
 			return;
 		}
@@ -1176,19 +1478,21 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 			update_cursor_style(server);
 			return;
 		}
-		wlr_seat_pointer_notify_button(server->seat, time_msec, button, state);
-		/* the held button (e.g. a text-selection drag) is released now:
-		 * re-run the motion path so focus and the compositor cursor are
-		 * re-evaluated at the current pointer position (the implicit grab
-		 * kept them pinned to the grabbed surface while the button was
-		 * held) */
-		process_cursor_motion(server, time_msec);
+		/* normal path: forward the release only if its press reached the
+		 * client.  A swallowed press whose grab ended early (e.g. its window
+		 * was destroyed) has its release swallowed here, never orphaned. */
+		if (!was_bound) {
+			wlr_seat_pointer_notify_button(server->seat, time_msec,
+				button, state);
+			process_cursor_motion(server, time_msec);
+		}
 		return;
 	}
 
 	/* WLR_BUTTON_PRESSED */
 	if (server->moving || server->zone_press || server->resizing) {
-		return; /* already grabbed */
+		bound_button_add(&server->bound_buttons, button);
+		return; /* already grabbed: swallow, release must be swallowed too */
 	}
 
 	/* the cursor is on a layer-shell surface (taskbar / menu overlay): the
@@ -1221,6 +1525,7 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 		if (edges != 0 &&
 				((edges & WLR_EDGE_TOP) != 0 ||
 				 !is_in_titlebar_zone(server, tl))) {
+			bound_button_add(&server->bound_buttons, button);
 			begin_resize(server, tl, edges);
 			return;
 		}
@@ -1228,6 +1533,7 @@ static void process_cursor_button(struct server *server, uint32_t time_msec,
 	if (tl != NULL && !tl->minimized && is_in_titlebar_zone(server, tl)) {
 		/* take over: the colored top strip is our visible title bar */
 		focus_toplevel(server, tl);
+		bound_button_add(&server->bound_buttons, button);
 		server->zone_press = true;
 		server->zone_toplevel = tl;
 		server->zone_button = button;

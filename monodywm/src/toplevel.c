@@ -926,6 +926,15 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 		wlr_scene_node_set_position(&tl->scene_tree->node, x, y);
 	}
 
+	/* outline mode (CONFIG_RESIZE_DRAW_CONTENTS=0): the button release only
+	 * drew the outline and sent the final size; this commit carries the
+	 * final geometry, so end the resize grab now.  The reposition above
+	 * already anchored a top/left grab to the committed size. */
+	if (tl->server->resizing && tl->server->resize_toplevel == tl &&
+			tl->server->resize_final_pending) {
+		resize_grab_clear(tl->server);
+	}
+
 	/* keep a fresh window centered until the user interacts with it:
 	 * Electron windows (QQ) often map with a small placeholder surface
 	 * and only commit their real size on a later frame, so re-center
@@ -1000,6 +1009,7 @@ static void xdg_toplevel_request_move(struct wl_listener *listener, void *data) 
 	 * the window without any drag.  move_toplevel_to() restores it on the
 	 * first real motion instead, so only an actual drag un-maximizes
 	 * (Windows behavior) while a mere click does nothing. */
+	server->move_deferred_restore = true;
 	begin_move(server, tl, server->cursor->x, server->cursor->y);
 	focus_toplevel(server, tl);
 }

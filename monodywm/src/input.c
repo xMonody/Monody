@@ -76,11 +76,22 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server,
 		seat_request_set_cursor);
 	struct wlr_seat_pointer_request_set_cursor_event *event = data;
+	/* compositor interactive move/resize owns the cursor: ignore every
+	 * client cursor request until the grab ends (labwc input_mode gate) */
+	if (server->input_mode != INPUT_MODE_PASSTHROUGH) {
+		return;
+	}
 	/* implicit grab: while a client holds a pointer button (e.g. text
 	 * selection), the cursor is frozen at whatever it was when the grab
 	 * started; ignore mid-drag cursor changes from the client (e.g. a CSD
 	 * client switching to its own resize cursor near the edge) */
 	if (server->seat->pointer_state.button_count > 0) {
+		return;
+	}
+	/* the compositor's own frame zone (title strip / resize edge) owns the
+	 * cursor there; ignore the client's request - it still receives motion
+	 * and keeps its hover feedback, it just cannot change the cursor */
+	if (pointer_over_frame_zone(server)) {
 		return;
 	}
 	if (event->seat_client == server->seat->pointer_state.focused_client) {
@@ -121,10 +132,11 @@ void seat_request_set_cursor(struct wl_listener *listener, void *data) {
 }
 
 /* the toplevel whose surface (or whose client's surface) the pointer is
- * over, or NULL.  seat_request_set_shape() uses it to decide whether the
- * client's own window-resize shapes should be suppressed (clients that
- * never negotiate xdg-decoration, e.g. Firefox, draw their own CSD frame
- * but are treated as undecorated here, so the compositor owns the resize). */
+ * over, or NULL.  Used to suppress the own directional window-resize shapes
+ * of a client that draws its CSD frame but is treated as undecorated here
+ * (Firefox, ...): the compositor owns such a window's resize, so those
+ * shapes would show a resize cursor for a resize that never happens (e.g.
+ * on a maximized window, whose edges the compositor never resizes). */
 static struct toplevel *toplevel_for_surface(struct server *server,
 		struct wlr_surface *surface) {
 	if (surface == NULL) {
@@ -147,6 +159,11 @@ void seat_request_set_shape(struct wl_listener *listener, void *data) {
 	struct server *server = wl_container_of(listener, server,
 		cursor_shape_set_shape);
 	struct wlr_cursor_shape_manager_v1_request_set_shape_event *event = data;
+	/* compositor interactive move/resize owns the cursor: ignore every
+	 * client cursor request until the grab ends (labwc input_mode gate) */
+	if (server->input_mode != INPUT_MODE_PASSTHROUGH) {
+		return;
+	}
 	if (event->device_type !=
 			WLR_CURSOR_SHAPE_MANAGER_V1_DEVICE_TYPE_POINTER) {
 		return; /* no tablet support in this compositor */
@@ -158,22 +175,25 @@ void seat_request_set_shape(struct wl_listener *listener, void *data) {
 	if (server->seat->pointer_state.button_count > 0) {
 		return;
 	}
+	/* the compositor's own frame zone owns the cursor there; the client
+	 * keeps motion and hover feedback but cannot change the cursor */
+	if (pointer_over_frame_zone(server)) {
+		return;
+	}
 	if (event->seat_client != server->seat->pointer_state.focused_client) {
 		return;
 	}
+	/* a client that draws its own decorations but never negotiates
+	 * xdg-decoration (Firefox, Chromium-without-CSD, ...) is treated as an
+	 * undecorated window: the compositor owns its frame and provides the
+	 * resize edges and cursor.  Its own directional window-resize shapes
+	 * (e-resize, s-resize, ...) therefore describe a resize that can never
+	 * happen here (the compositor grabs the presses at the edge, and never
+	 * resizes a maximized window), so ignore them - the compositor's resize
+	 * cursor stays the only one.  Web-content cursors (ew-resize splitters,
+	 * text, pointer, ...) are unaffected. */
 	struct wlr_surface *focused =
 		server->seat->pointer_state.focused_surface;
-	/* A client that draws its own decorations but never negotiates
-	 * xdg-decoration (Firefox, Chromium) is treated as an undecorated
-	 * window here: the compositor owns its frame, so it provides the
-	 * resize edges and the matching resize cursor.  The client's own
-	 * directional window-resize shapes (e-resize, s-resize, ...) then
-	 * fight the compositor's cursor just outside the compositor's edge
-	 * zone - the "two resize cursors" seen around Firefox.  Those client
-	 * shapes cannot resize the window anyway (the compositor grabs the
-	 * presses at the edge), so ignore them: the compositor's own resize
-	 * cursor stays the only one.  Web-content cursors (ew-resize
-	 * splitters, text, pointer, ...) are unaffected. */
 	struct toplevel *tl = toplevel_for_surface(server, focused);
 	if (tl != NULL &&
 			tl->decoration_mode !=

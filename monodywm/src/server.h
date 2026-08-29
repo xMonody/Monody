@@ -277,6 +277,23 @@ enum zone_action {
 	ZONE_CLOSE,        /* right third: close the window */
 };
 
+/* pointer interaction mode, mirroring labwc's input_mode state machine:
+ * PASSTHROUGH = events and cursor go to the focused client; MOVE / RESIZE
+ * = the compositor consumes pointer events and owns the cursor. */
+enum input_mode {
+	INPUT_MODE_PASSTHROUGH = 0,
+	INPUT_MODE_MOVE,
+	INPUT_MODE_RESIZE,
+};
+
+/* button presses the compositor swallowed (so their releases are swallowed
+ * too and never reach the client); mirrors labwc's bound_buttons set. */
+#define BOUND_BUTTONS_MAX 8
+struct bound_buttons {
+	uint32_t values[BOUND_BUTTONS_MAX];
+	int size;
+};
+
 struct server {
 	struct wl_display *display;
 	struct wlr_backend *backend;
@@ -359,12 +376,16 @@ struct server {
 	struct wl_event_source *chord_timer; /* double-click vs hold timer */
 	bool moving;                    /* a window move is in progress */
 	struct toplevel *move_toplevel;
+	enum input_mode input_mode;      /* PASSTHROUGH / MOVE / RESIZE */
+	struct bound_buttons bound_buttons; /* presses swallowed by the compositor */
 	double grab_x, grab_y; /* cursor offset from the window origin */
 	/* the cursor position when the move started: used to re-anchor the
 	 * grab after a maximized window is restored mid-drag (the client's
 	 * own title bar sends xdg_toplevel.move on a plain click, so the
 	 * restore is deferred until the user actually drags) */
 	double move_ref_x, move_ref_y;
+	double move_max_w, move_max_h; /* maximized size at move start: the press offset is mapped proportionally into the restored box */
+	bool move_deferred_restore;    /* xdg_toplevel.move from a maximized window: restore + proportional re-anchor on first motion (zone/chord drags already re-anchor before begin_move) */
 	double press_x, press_y;
 	bool dragged;       /* moved beyond CONFIG_DRAG_THRESHOLD during a press */
 	enum zone_action zone_action; /* armed double-click action on the title
@@ -389,6 +410,15 @@ struct server {
 	uint32_t resize_edges;     /* enum wlr_edges */
 	struct wlr_box resize_orig; /* window box at grab start */
 	int resize_last_w, resize_last_h; /* size last sent to the client */
+
+	/* resize outline (CONFIG_RESIZE_DRAW_CONTENTS=0): a target box drawn
+	 * over the scene while dragging instead of live-resizing the client, so
+	 * the dragged edge tracks the cursor 1:1 like a window move */
+	struct wlr_scene_tree *resize_outline;
+	struct wlr_scene_rect *resize_outline_edges[4];
+	struct wlr_box resize_target; /* target box in outline mode */
+	bool resize_final_pending;    /* outline mode: waiting for the final commit */
+	struct wl_event_source *resize_final_timer; /* outline mode: watchdog if the client never commits */
 
 	/* current compositor-driven cursor name, NULL when the client's cursor
 	 * is shown (used to avoid redundant updates) */
@@ -585,6 +615,14 @@ void begin_move(struct server *server, struct toplevel *tl,
 void begin_resize(struct server *server, struct toplevel *tl, uint32_t edges);
 void end_move(struct server *server);
 void end_resize(struct server *server);
+/* clear the resize grab state without applying geometry (used once the final
+ * commit lands in outline mode, and when the toplevel goes away mid-grab) */
+void resize_grab_clear(struct server *server);
+/* is the cursor over the compositor's own frame zone (title strip / resize
+ * edge) of any window?  There the compositor owns the cursor, so client
+ * cursor requests are ignored (input.c) - the client still receives motion
+ * and keeps its hover feedback, it just cannot change the cursor. */
+bool pointer_over_frame_zone(struct server *server);
 void update_cursor_style(struct server *server);
 /* show the cursor the focused client currently wants (shape, surface or the
  * default arrow); used when a compositor cursor override ends */
