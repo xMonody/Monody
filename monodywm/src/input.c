@@ -482,23 +482,18 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 	 * the input method holds the keyboard grab (cursor in a text field,
 	 * fcitx5/ibus active) - otherwise Ctrl+Alt+P and friends would be
 	 * swallowed by the IM and rofi/terminals could never be launched from
-	 * an input box.  Keys the shortcut did not consume and that come from
-	 * a grabbed keyboard are forwarded to the IM by ime.c instead of the
-	 * focused client; keys from other keyboards (e.g. fcitx5's passthrough
-	 * re-injection device) pass through normally. */
+	 * an input box.  Routing is decided here, in this single handler:
+	 *  - a grabbed keyboard belongs to the IM: forward the key to it
+	 *    unless a compositor shortcut consumed it;
+	 *  - any other keyboard reaches the focused client normally. */
 	bool handled = false;
 	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		handled = keyboard_shortcut(server, kb->keyboard, keycode);
 	}
-	/* remember the key the shortcut consumed on a grabbed keyboard so
-	 * ime.c's grab forwarding (which runs right after this listener for
-	 * the same event) can skip it - the IM must not see keys the
-	 * compositor already used.  Only grabbed keyboards are marked: a key
-	 * consumed on another keyboard must never suppress a grabbed key. */
-	server->consumed_keycode =
-		(handled && ime_keyboard_grabbed(server, kb->keyboard))
-			? event->keycode : 0;
-	if (!handled && ime_keyboard_grabbed(server, kb->keyboard)) {
+	if (ime_keyboard_grabbed(server, kb->keyboard)) {
+		if (!handled) {
+			ime_forward_key(server, kb->keyboard, event);
+		}
 		wlr_log(WLR_DEBUG, "input: key from grabbed keyboard, skipping client");
 		return;
 	}
@@ -518,6 +513,25 @@ static void keyboard_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&kb->destroy.link);
 	wl_list_remove(&kb->link);
 	free(kb);
+}
+
+/* move the seat keyboard to a surface (NULL clears the focus).  Shared by
+ * toplevel focus and layer-shell keyboard interactivity so every focus
+ * transition goes through the same notify_enter path. */
+void seat_keyboard_focus(struct server *server, struct wlr_surface *surface) {
+	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+	if (surface != NULL) {
+		if (keyboard != NULL) {
+			wlr_seat_keyboard_notify_enter(server->seat, surface,
+				keyboard->keycodes, keyboard->num_keycodes,
+				&keyboard->modifiers);
+		} else {
+			wlr_seat_keyboard_notify_enter(server->seat, surface,
+				NULL, 0, NULL);
+		}
+	} else {
+		wlr_seat_keyboard_clear_focus(server->seat);
+	}
 }
 
 /* ------------------------------------------------------------------ */

@@ -160,16 +160,26 @@ static void layer_surface_keyboard_focus(struct server *server,
 	wlr_log(WLR_DEBUG, "layer: keyboard focus -> %s surface %p",
 		layer_surface->namespace ? layer_surface->namespace : "(null)",
 		(void *)layer_surface->surface);
-	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
-	if (keyboard != NULL) {
-		wlr_seat_keyboard_notify_enter(server->seat,
-			layer_surface->surface, keyboard->keycodes,
-			keyboard->num_keycodes, &keyboard->modifiers);
-	} else {
-		wlr_seat_keyboard_notify_enter(server->seat,
-			layer_surface->surface, NULL, 0, NULL);
-	}
+	seat_keyboard_focus(server, layer_surface->surface);
 	ime_set_focus(server, layer_surface->surface);
+}
+
+/* release the interactive layer surface's keyboard hold (if any) and move
+ * the seat keyboard to `surface` in the same step.  `surface` is the
+ * toplevel taking over the keyboard (focus_toplevel) or the previously
+ * focused toplevel's surface (layer unmap / destroy / losing
+ * interactivity); NULL clears the seat keyboard focus. */
+void layer_keyboard_clear(struct server *server, struct wlr_surface *surface) {
+	struct layer_surface *ls = server->layer_focused;
+	if (ls == NULL) {
+		return;
+	}
+	ls->keyboard_focused = false;
+	server->layer_focused = NULL;
+	wlr_log(WLR_DEBUG, "layer: keyboard focus released (surface %p)",
+		(void *)ls->layer_surface->surface);
+	seat_keyboard_focus(server, surface);
+	ime_set_focus(server, surface);
 }
 
 /* the layer surface no longer holds the keyboard (unmapped / destroyed /
@@ -180,34 +190,13 @@ static void layer_surface_keyboard_unfocus(struct server *server,
 	if (server->layer_focused != ls) {
 		return;
 	}
-	ls->keyboard_focused = false;
-	server->layer_focused = NULL;
-	wlr_log(WLR_DEBUG, "layer: keyboard focus released (surface %p)",
-		(void *)ls->layer_surface->surface);
+	struct wlr_surface *surface = NULL;
 	struct toplevel *tl = server->focused;
 	if (tl != NULL && tl->xdg_toplevel->base != NULL &&
 			tl->xdg_toplevel->base->surface->mapped) {
-		struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
-		if (keyboard != NULL) {
-			wlr_seat_keyboard_notify_enter(server->seat,
-				tl->xdg_toplevel->base->surface, keyboard->keycodes,
-				keyboard->num_keycodes, &keyboard->modifiers);
-		} else {
-			wlr_seat_keyboard_notify_enter(server->seat,
-				tl->xdg_toplevel->base->surface, NULL, 0, NULL);
-		}
-		ime_set_focus(server, tl->xdg_toplevel->base->surface);
-	} else {
-		wlr_seat_keyboard_clear_focus(server->seat);
-		ime_set_focus(server, NULL);
+		surface = tl->xdg_toplevel->base->surface;
 	}
-}
-
-void layer_keyboard_clear(struct server *server) {
-	if (server->layer_focused != NULL) {
-		server->layer_focused->keyboard_focused = false;
-		server->layer_focused = NULL;
-	}
+	layer_keyboard_clear(server, surface);
 }
 
 static void layer_surface_commit(struct wl_listener *listener, void *data) {

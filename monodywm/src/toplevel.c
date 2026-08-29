@@ -545,12 +545,6 @@ void focus_toplevel(struct server *server, struct toplevel *tl) {
 		return;
 	}
 	bool layer_held = server->layer_focused != NULL;
-	/* a toplevel took the keyboard: an interactive layer surface (rofi
-	 * overlay, ...) no longer holds it.  Done before the prev == tl early
-	 * return so clicking the already-focused window also pulls the
-	 * keyboard back from a launcher overlay (the notify_enter below then
-	 * moves the seat keyboard off the layer surface). */
-	layer_keyboard_clear(server);
 	struct toplevel *prev = server->focused;
 	if (prev == tl && !layer_held) {
 		toplevel_raise(server, tl);
@@ -571,14 +565,13 @@ void focus_toplevel(struct server *server, struct toplevel *tl) {
 	if (tl->fthandle != NULL) {
 		wlr_foreign_toplevel_handle_v1_set_activated(tl->fthandle, true);
 	}
-	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
-	if (keyboard != NULL) {
-		wlr_seat_keyboard_notify_enter(server->seat,
-			tl->xdg_toplevel->base->surface, keyboard->keycodes,
-			keyboard->num_keycodes, &keyboard->modifiers);
+	/* move the seat keyboard to this toplevel.  If a launcher overlay held
+	 * it (rofi), layer_keyboard_clear() releases that hold and moves the
+	 * keyboard here in one step; otherwise the toplevel simply takes it. */
+	if (layer_held) {
+		layer_keyboard_clear(server, tl->xdg_toplevel->base->surface);
 	} else {
-		wlr_seat_keyboard_notify_enter(server->seat,
-			tl->xdg_toplevel->base->surface, NULL, 0, NULL);
+		seat_keyboard_focus(server, tl->xdg_toplevel->base->surface);
 	}
 	toplevel_raise(server, tl);
 	/* tell the input method which surface now owns text input */

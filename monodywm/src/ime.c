@@ -351,35 +351,33 @@ void ime_update_popup(struct server *server) {
 /* input method (fcitx5)                                              */
 /* ------------------------------------------------------------------ */
 
-/* forward key events to the IM while it holds the keyboard grab */
-static void ime_keyboard_grab_key(struct wl_listener *listener, void *data) {
-	struct ime *ime = wl_container_of(listener, ime, keyboard_grab_key);
-	struct wlr_keyboard_key_event *event = data;
-	if (ime->input_method == NULL ||
-			ime->input_method->keyboard_grab == NULL) {
-		return;
+/* forward a key event to every input method whose grab is connected to this
+ * keyboard.  Called from input.c's single key handler after compositor
+ * shortcuts were checked, so a key the compositor consumed is simply never
+ * passed here - no cross-listener handshake or ordering dependency. */
+void ime_forward_key(struct server *server, struct wlr_keyboard *keyboard,
+		struct wlr_keyboard_key_event *event) {
+	struct ime *ime;
+	wl_list_for_each(ime, &server->imes, link) {
+		if (ime->keyboard != keyboard ||
+				ime->input_method == NULL ||
+				ime->input_method->keyboard_grab == NULL) {
+			continue;
+		}
+		/* never forward a release without the matching forwarded press */
+		if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED &&
+				!ime_key_forwarded(ime, event->keycode)) {
+			continue;
+		}
+		if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			ime_key_forwarded_add(ime, event->keycode);
+		} else {
+			ime_key_forwarded_remove(ime, event->keycode);
+		}
+		wlr_input_method_keyboard_grab_v2_send_key(
+			ime->input_method->keyboard_grab, event->time_msec,
+			event->keycode, event->state);
 	}
-	/* a key the compositor consumed with a global shortcut must not also
-	 * be handed to the IM (input.c marks it before this listener runs;
-	 * keyboard_key is registered before the grab's for keyboards attached
-	 * before the IM connected) */
-	if (ime->server->consumed_keycode == event->keycode) {
-		ime->server->consumed_keycode = 0;
-		return;
-	}
-	/* never forward a release without the matching forwarded press */
-	if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED &&
-			!ime_key_forwarded(ime, event->keycode)) {
-		return;
-	}
-	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-		ime_key_forwarded_add(ime, event->keycode);
-	} else {
-		ime_key_forwarded_remove(ime, event->keycode);
-	}
-	wlr_input_method_keyboard_grab_v2_send_key(
-		ime->input_method->keyboard_grab, event->time_msec,
-		event->keycode, event->state);
 }
 
 static void ime_keyboard_grab_modifiers(struct wl_listener *listener,
@@ -398,7 +396,6 @@ static void ime_keyboard_grab_destroy(struct wl_listener *listener,
 		void *data) {
 	struct ime *ime = wl_container_of(listener, ime, keyboard_grab_destroy);
 	if (ime->keyboard != NULL) {
-		wl_list_remove(&ime->keyboard_grab_key.link);
 		wl_list_remove(&ime->keyboard_grab_modifiers.link);
 	}
 	wl_list_remove(&ime->keyboard_grab_destroy.link);
@@ -408,8 +405,8 @@ static void ime_keyboard_grab_destroy(struct wl_listener *listener,
 }
 
 /* attach the given seat keyboard to the IM's grab: send it the current
- * keymap/repeat info and forward key/modifier events to the IM from now
- * on.  Idempotent: re-attaching the same keyboard is a no-op. */
+ * keymap/repeat info and keep modifiers in sync from now on.  Key events
+ * are forwarded by input.c via ime_forward_key().  Idempotent. */
 static void ime_keyboard_connect(struct ime *ime,
 		struct wlr_keyboard *keyboard) {
 	struct wlr_input_method_keyboard_grab_v2 *keyboard_grab =
@@ -421,7 +418,6 @@ static void ime_keyboard_connect(struct ime *ime,
 		return;
 	}
 	if (ime->keyboard != NULL) {
-		wl_list_remove(&ime->keyboard_grab_key.link);
 		wl_list_remove(&ime->keyboard_grab_modifiers.link);
 	}
 	wlr_log(WLR_DEBUG, "ime: connecting grab to keyboard %p (seat=%p vk=%d)",
@@ -432,8 +428,6 @@ static void ime_keyboard_connect(struct ime *ime,
 	 * sync from here on */
 	wlr_input_method_keyboard_grab_v2_set_keyboard(keyboard_grab, keyboard);
 
-	ime->keyboard_grab_key.notify = ime_keyboard_grab_key;
-	wl_signal_add(&keyboard->events.key, &ime->keyboard_grab_key);
 	ime->keyboard_grab_modifiers.notify = ime_keyboard_grab_modifiers;
 	wl_signal_add(&keyboard->events.modifiers, &ime->keyboard_grab_modifiers);
 	if (!ime->keyboard_grab_destroy_added) {
@@ -502,7 +496,6 @@ void ime_detach_keyboard(struct server *server,
 	struct ime *ime;
 	wl_list_for_each(ime, &server->imes, link) {
 		if (ime->keyboard == keyboard) {
-			wl_list_remove(&ime->keyboard_grab_key.link);
 			wl_list_remove(&ime->keyboard_grab_modifiers.link);
 			ime->keyboard = NULL;
 			ime->forwarded_key_count = 0;
@@ -639,7 +632,6 @@ static void ime_destroy(struct wl_listener *listener, void *data) {
 	struct server *server = ime->server;
 
 	if (ime->keyboard != NULL) {
-		wl_list_remove(&ime->keyboard_grab_key.link);
 		wl_list_remove(&ime->keyboard_grab_modifiers.link);
 	}
 	if (ime->keyboard_grab_destroy_added) {

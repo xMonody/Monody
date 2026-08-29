@@ -83,9 +83,10 @@ struct ime {
 	struct wl_listener keyboard_grab_destroy;
 	struct wl_listener new_popup_surface;
 
-	/* seat keyboard while the IM holds the keyboard grab */
+	/* seat keyboard while the IM holds the keyboard grab.  Keys are
+	 * forwarded by input.c via ime_forward_key() so compositor shortcuts
+	 * are checked first; only modifiers are synced through a listener. */
 	struct wlr_keyboard *keyboard;
-	struct wl_listener keyboard_grab_key;
 	struct wl_listener keyboard_grab_modifiers;
 	bool keyboard_grab_destroy_added; /* grab destroy listener attached */
 
@@ -330,12 +331,6 @@ struct server {
 							 * talks to (NULL when none) */
 	struct wlr_surface *ime_focused_surface; /* surface owning text input */
 	struct wl_listener ime_focused_surface_destroy;
-	/* raw keycode (evdev numbering) of the key the compositor just consumed
-	 * with a global shortcut (0 = none): set by input.c before ime.c's grab
-	 * listener runs for the same event, so a key that fired a shortcut is
-	 * never also forwarded to the input method's keyboard grab */
-	uint32_t consumed_keycode;
-
 	/* IPC socket for status bars (JSON events) */
 	int ipc_fd;
 	struct wl_event_source *ipc_source;
@@ -525,9 +520,9 @@ bool place_toplevel(struct server *server, struct toplevel *tl);
 void get_work_area(struct server *server, struct wlr_output *output,
 	struct wlr_box *area);
 void server_new_layer_surface(struct wl_listener *listener, void *data);
-/* a toplevel took the keyboard: the interactive layer surface (if any)
- * no longer holds it */
-void layer_keyboard_clear(struct server *server);
+/* release the interactive layer surface's keyboard hold (if any) and move
+ * the seat keyboard to `surface` in one step (NULL clears it) */
+void layer_keyboard_clear(struct server *server, struct wlr_surface *surface);
 
 /* ---- output.c: monitors + output management ---- */
 void server_new_output(struct wl_listener *listener, void *data);
@@ -563,6 +558,8 @@ struct keyboard {
 /* ---- input.c: seat, keyboard focus, shortcuts ---- */
 void server_new_virtual_keyboard(struct wl_listener *listener, void *data);
 bool keyboard_is_typing(struct wlr_input_device *device);
+/* move the seat keyboard to a surface (NULL clears the focus) */
+void seat_keyboard_focus(struct server *server, struct wlr_surface *surface);
 
 /* ---- ime.c: input method relay (fcitx5 / ibus) ---- */
 void ime_set_focus(struct server *server, struct wlr_surface *surface);
@@ -573,6 +570,11 @@ void ime_detach_keyboard(struct server *server,
 /* true if the input method's keyboard grab is connected to this keyboard */
 bool ime_keyboard_grabbed(struct server *server,
 	struct wlr_keyboard *keyboard);
+/* forward a key event to the input method(s) whose grab is connected to
+ * this keyboard; called from input.c's single key handler after compositor
+ * shortcuts were checked, so a consumed key is simply never passed here */
+void ime_forward_key(struct server *server, struct wlr_keyboard *keyboard,
+	struct wlr_keyboard_key_event *event);
 void ime_update_popup(struct server *server);
 void ime_new_input_method(struct wl_listener *listener, void *data);
 void ime_new_text_input(struct wl_listener *listener, void *data);
