@@ -31,6 +31,12 @@ float border_width(struct toplevel *tl) {
 	if (tl->fullscreen && !CONFIG_FULLSCREEN_BORDER) {
 		return 0.0f;
 	}
+	/* optionally drop the border ring on unfocused windows (flat look for
+	 * inactive windows).  The invisible title strip / resize gesture zones
+	 * are separate from the visible ring, so interaction is unaffected. */
+	if (!CONFIG_BORDER_UNFOCUSED_DRAW && tl->server->focused != tl) {
+		return 0.0f;
+	}
 	return (float)CONFIG_BORDER_WIDTH;
 }
 

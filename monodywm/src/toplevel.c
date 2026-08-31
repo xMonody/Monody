@@ -275,8 +275,9 @@ struct toplevel *toplevel_by_id(struct server *server, int id) {
 
 /* the window that should receive focus when the focused toplevel `tl` goes
  * away: a dialog hands focus back to its xdg parent (the main window it
- * belongs to), otherwise prefer the window that launched it (after_id),
- * then fall back to the previous visible window in creation order. */
+ * belongs to), otherwise prefer the window that launched it (after_id,
+ * which prefers a same-process sibling window over a terminal), then fall
+ * back to the previous visible window in creation order. */
 static struct toplevel *focus_fallback(struct server *server,
 		struct toplevel *tl) {
 	/* a transient/dialog window declared its parent via
@@ -626,7 +627,9 @@ void update_toplevel_output(struct server *server, struct toplevel *tl) {
 static void toplevel_unfocus(struct server *server, struct toplevel *tl) {
 	if (server->focused == tl) {
 		/* the focused window is going away: hand focus back to the window
-		 * that launched it (after_id), or the previous visible window */
+		 * that launched it (after_id; a same-process sibling window beats
+		 * the terminal that spawned the process), or the previous visible
+		 * window */
 		struct toplevel *prev = focus_fallback(server, tl);
 		server->focused = NULL;
 		wlr_seat_keyboard_clear_focus(server->seat);
@@ -1361,8 +1364,13 @@ void server_new_toplevel(struct wl_listener *listener, void *data) {
 	wl_signal_add(&xdg_toplevel->events.destroy, &tl->toplevel_destroy);
 
 	/* Remember which window (if any) launched this one: when this window
-	 * closes, focus returns to that launcher window. */
-	struct toplevel *ancestor = window_ancestor(server, process_parent_pid(tl->pid));
+	 * closes, focus returns to that launcher window.  The walk starts at
+	 * this window's own pid so a sibling window of the same process (e.g.
+	 * Qt's parentless About dialogs - same pid as the main window) wins
+	 * over the process-tree ancestor (the terminal that launched the
+	 * process): closing the dialog must hand focus back to its main
+	 * window, not to the terminal. */
+	struct toplevel *ancestor = window_ancestor(server, tl->pid);
 	tl->after_id = ancestor != NULL ? ancestor->id : 0;
 
 	wl_list_insert(server->toplevels.prev, &tl->link);

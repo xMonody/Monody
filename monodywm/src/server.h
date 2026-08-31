@@ -209,7 +209,7 @@ struct toplevel {
 	bool ipc_added; /* window_added was emitted */
 	char *app_id;   /* cached app_id (survives teardown for window_removed) */
 	pid_t pid;      /* client process id (lets the bar match tray items) */
-	int after_id;   /* id of the window this one was launched from (0 = none); focus returns there on close */
+	int after_id;   /* id of the window this one was launched from (0 = none); focus returns there on close; prefers a same-process sibling window over a terminal */
 
 	struct wl_list link; /* server.toplevels */
 

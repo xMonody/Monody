@@ -398,68 +398,74 @@ static bool keyboard_shortcut(struct server *server,
 	int nsyms = xkb_keymap_key_get_syms_by_level(keyboard->keymap,
 		keycode, layout, 0, &syms);
 	uint32_t mods = keyboard->modifiers.depressed | keyboard->modifiers.latched;
-	bool main_mod = (mods & CONFIG_MOD_MAIN) == CONFIG_MOD_MAIN;
-	bool quit_mod = (mods & CONFIG_MOD_QUIT) == CONFIG_MOD_QUIT;
 
 	for (int i = 0; i < nsyms; i++) {
 		/* base syms are already unshifted, but lower anyway for layouts
 		 * where the base level carries an uppercase letter */
 		xkb_keysym_t sym = xkb_keysym_to_lower(syms[i]);
-		if (sym == CONFIG_KEY_QUIT && main_mod /*(main_mod || quit_mod)*/ ) {
-			wl_display_terminate(server->display);
-			return true;
-		}
-		if (main_mod && sym == CONFIG_KEY_MAXIMIZE) {
-			if (server->focused != NULL) {
-				if (server->focused->xdg_toplevel->current.maximized) {
-					/* toggle: restore the size/position saved before maximizing */
-					restore_maximized_toplevel(server->focused);
-				} else {
-					set_maximized(server, server->focused, true);
+		/* walk the config-driven action table (config.h): the same action
+		 * may be bound to several mods+key combos */
+		for (size_t j = 0;
+				j < sizeof(config_action_shortcuts) /
+					sizeof(config_action_shortcuts[0]); j++) {
+			const struct config_action_shortcut *sc =
+				&config_action_shortcuts[j];
+			if ((mods & sc->mods) != sc->mods || sym != sc->key) {
+				continue;
+			}
+			switch (sc->action) {
+			case CONFIG_ACTION_QUIT:
+				wl_display_terminate(server->display);
+				return true;
+			case CONFIG_ACTION_MAXIMIZE:
+				if (server->focused != NULL) {
+					if (server->focused->xdg_toplevel->current.maximized) {
+						/* toggle: restore the size/position saved before maximizing */
+						restore_maximized_toplevel(server->focused);
+					} else {
+						set_maximized(server, server->focused, true);
+					}
 				}
-			}
-			return true;
-		}
-		if (main_mod && sym == CONFIG_KEY_MINIMIZE) {
-			if (server->focused != NULL) {
-				set_minimized(server, server->focused, true);
-			}
-			return true;
-		}
-		if (main_mod && sym == CONFIG_KEY_NEXT_WINDOW) {
-			focus_window(server, cycle_toplevel(server, true));
-			return true;
-		}
-		if (main_mod && sym == CONFIG_KEY_PREV_WINDOW) {
-			focus_window(server, cycle_toplevel(server, false));
-			return true;
-		}
-		if (main_mod && sym == CONFIG_KEY_CLOSE) {
-			if (server->focused != NULL) {
-				close_toplevel(server->focused);
-			}
-			return true;
-		}
-		if (main_mod && sym == CONFIG_KEY_CLOSE_OTHER) {
-			/* close every window except the currently focused one;
-			 * close_toplevel works for minimized/maximized/fullscreen
-			 * toplevels as well */
-			struct toplevel *tl, *tmp;
-			wl_list_for_each_safe(tl, tmp, &server->toplevels, link) {
-				if (tl != server->focused) {
-					close_toplevel(tl);
+				return true;
+			case CONFIG_ACTION_MINIMIZE:
+				if (server->focused != NULL) {
+					set_minimized(server, server->focused, true);
 				}
+				return true;
+			case CONFIG_ACTION_NEXT_WINDOW:
+				focus_window(server, cycle_toplevel(server, true));
+				return true;
+			case CONFIG_ACTION_PREV_WINDOW:
+				focus_window(server, cycle_toplevel(server, false));
+				return true;
+			case CONFIG_ACTION_CLOSE:
+				if (server->focused != NULL) {
+					close_toplevel(server->focused);
+				}
+				return true;
+			case CONFIG_ACTION_CLOSE_OTHER:
+				/* close every window except the currently focused one;
+				 * close_toplevel works for minimized/maximized/fullscreen
+				 * toplevels as well */
+				{
+					struct toplevel *tl, *tmp;
+					wl_list_for_each_safe(tl, tmp, &server->toplevels, link) {
+						if (tl != server->focused) {
+							close_toplevel(tl);
+						}
+					}
+				}
+				return true;
+			case CONFIG_ACTION_TASK:
+				if (sym >= XKB_KEY_1 && sym <= XKB_KEY_9) {
+					struct toplevel *tl = nth_toplevel(server,
+						sym - XKB_KEY_1);
+					if (tl != NULL) {
+						focus_window(server, tl);
+					}
+				}
+				return true;
 			}
-			return true;
-		}
-		if ((mods & CONFIG_MOD_TASK) == CONFIG_MOD_TASK &&
-				sym >= XKB_KEY_1 && sym <= XKB_KEY_9) {
-			struct toplevel *tl = nth_toplevel(server,
-				sym - XKB_KEY_1);
-			if (tl != NULL) {
-				focus_window(server, tl);
-			}
-			return true;
 		}
 		for (size_t i = 0;
 				i < sizeof(config_app_shortcuts) /
