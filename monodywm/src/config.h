@@ -12,6 +12,7 @@
 
 #include <wlr/types/wlr_keyboard.h>
 
+//#define CONFIG_CURSOR_THEME    "McMojave-cursors"      /* cursor theme  */
 #define CONFIG_CURSOR_THEME    "Adwaita"      /* cursor theme  */
 #define CONFIG_TITLEBAR_CURSOR "pointer"      /* cursor shown while hovering the title strip */
 #define CONFIG_MOVE_CURSOR     "all-scroll"   /* cursor shown while dragging (moving) a window */
@@ -28,8 +29,8 @@
 #define CONFIG_BORDER_TOP_RIGHT  0x7c73b0    /* 顶部边框右1/3颜色 (关闭) */
 #define CONFIG_BORDER_GRADIENT_WIDTH 10       /* 顶部边框三段颜色拼接处渐变宽度 (px) */
 
-#define CONFIG_FULLSCREEN_BORDER 1            /* 全屏窗口是否显示边框 0/1 */
-#define CONFIG_FULLSCREEN_BORDER_COLOR 0xea9a71 /* 全屏边框颜色 0xRRGGBB */
+#define CONFIG_FULLSCREEN_BORDER 1              /* 全屏窗口是否显示边框 0/1 */
+#define CONFIG_FULLSCREEN_BORDER_COLOR 0xE78284 /* 全屏边框颜色 0xRRGGBB */
 
 #define CONFIG_SHADOW_WIDTH      20          /* 窗口阴影宽度 (px) */
 #define CONFIG_SHADOW_ALPHA      0.1f        /* 窗口阴影不透明度 0.0-1.0 */
@@ -96,7 +97,7 @@ static const struct config_action_shortcut config_action_shortcuts[] = {
 	{ CONFIG_ACTION_NEXT_WINDOW, MODKEY4, XKB_KEY_n },       /*  ctrl+Alt+n */
 	{ CONFIG_ACTION_PREV_WINDOW, MODKEY4, XKB_KEY_p },       /*  ctrl+Alt+p */
 	{ CONFIG_ACTION_CLOSE,       MODKEY4, XKB_KEY_c },       /*  ctrl+Alt+c */
-	{ CONFIG_ACTION_MINIMIZE,    MODKEY4, XKB_KEY_m },       /*  ctrl+Alt+m */
+	{ CONFIG_ACTION_MINIMIZE,    MODKEY2, XKB_KEY_m },       /*  ctrl+Alt+m */
 	{ CONFIG_ACTION_CLOSE_OTHER, MODKEY4, XKB_KEY_q },       /*  ctrl+Alt+q */
 
 	{ CONFIG_ACTION_TASK,        MODKEY1, XKB_KEY_1 },       /* alt+.. 切换1-9*/
@@ -144,8 +145,8 @@ static const char *const config_force_undecorated[] = {
 	"org.chromium",
 	"org.mozilla",
 	"code",                 /* VS Code / VS Codium */
-	"com.visualstudio.code", /* 官方 VS Code */
     "clash-verge",
+    "cn.MoeKoe.Music",
 	NULL,
 };
 

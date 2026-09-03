@@ -304,12 +304,18 @@ int main(int argc, char *argv[]) {
 	wl_list_init(&server.text_inputs);
 	wl_list_init(&server.keyboards);
 
-	/* ---- core & stable protocols ---- */
+	/* ---- core & stable protocols ----
+	  No explicit wl_shm creation: wlr_renderer_init_wl_display() above
+	  already registered the wl_shm global (and, on renderers with a DRM
+	  fd and dmabuf support, the linux-dmabuf global too).  Creating
+	  wl_shm again here advertised a second duplicate wl_shm global. */
 	wlr_compositor_create(server.display, 6, server.renderer);
 	wlr_subcompositor_create(server.display);
-	wlr_shm_create_with_renderer(server.display, 1, server.renderer);
-	wlr_linux_dmabuf_v1_create_with_renderer(server.display, 5,
-		server.renderer);
+
+	if (wlr_renderer_get_texture_formats(server.renderer,
+			WLR_BUFFER_CAP_DMABUF) == NULL || wlr_renderer_get_drm_fd(server.renderer) < 0) {
+		wlr_linux_dmabuf_v1_create_with_renderer(server.display, 5, server.renderer);
+	}
 	wlr_data_device_manager_create(server.display);
 	struct wlr_xdg_shell *xdg_shell =
 		wlr_xdg_shell_create(server.display, 6);
