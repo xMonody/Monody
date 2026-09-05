@@ -539,8 +539,10 @@ void border_top_colors(struct toplevel *tl,
 void border_focus_changed(struct toplevel *tl, struct toplevel *prev);
 
 /* ---- shadow.c: window shadow width/opacity policy ---- */
-float shadow_width(struct toplevel *tl);
+float shadow_sigma(struct toplevel *tl);
 float shadow_alpha(void);
+struct wlr_render_color shadow_color(void);
+int shadow_padding(void);
 
 /* ---- place.c: initial window placement ----
  * size fully client-driven, position centered on the output (screen) */

@@ -88,10 +88,12 @@ static const char *rounded_vert_src =
  * own color, matching the title-strip gesture zones; the rest of the ring
  * uses the focus-dependent base color.
  *
- * An outward shadow ring is drawn outside the rounded rect (only when
- * u_shadow_width > 0, i.e. for the focused window): it takes the border
- * color at each edge and fades from u_shadow_alpha at the edge to fully
- * transparent at u_shadow_width px out. */
+ * A soft gaussian drop shadow is drawn outside the rounded rect (only
+ * when u_shadow_sigma > 0, i.e. for the focused window).  Its color and
+ * peak opacity come from u_shadow_color / u_shadow_alpha and are
+ * independent of the border color; the falloff is exp(-d^2 / 2 sigma^2)
+ * in the SDF distance, which reads as a scenefx-style blurred box
+ * shadow instead of a hard outward-fading ring. */
 static const char *rounded_frag_src =
 	"precision mediump float;\n"
 	"varying vec2 v_uv;\n"
@@ -106,7 +108,8 @@ static const char *rounded_frag_src =
 	"uniform vec4 u_border_top_mid;\n"
 	"uniform vec4 u_border_top_right;\n"
 	"uniform float u_border_gradient;\n"
-	"uniform float u_shadow_width;\n"
+	"uniform float u_shadow_sigma;\n"
+	"uniform vec4 u_shadow_color;\n"
 	"uniform float u_shadow_alpha;\n"
 	"void main() {\n"
 	"  vec2 p = v_uv * u_size - u_window_origin;\n"
@@ -131,15 +134,20 @@ static const char *rounded_frag_src =
 	"  /* window (content + border), premultiplied */\n"
 	"  vec3 win_rgb = c.rgb * inner + bcolor.rgb * bcolor.a * border;\n"
 	"  float win_a = c.a * inner + bcolor.a * border;\n"
-	"  /* outward shadow ring just outside the rounded rect */\n"
+	"  /* soft gaussian drop shadow outside the rounded rect */\n"
 	"  float shadow_a = 0.0;\n"
-	"  if (u_shadow_width > 0.0) {\n"
-	"    float shadow_out = smoothstep(-aa, 0.0, sd);\n"
-	"    float shadow_fade = 1.0 - smoothstep(0.0, u_shadow_width, sd);\n"
-	"    shadow_a = u_shadow_alpha * shadow_out * shadow_fade;\n"
+	"  if (u_shadow_sigma > 0.0) {\n"
+	"    /* soft gaussian drop shadow: exp(-d^2/2s^2) in the SDF distance,\n"
+	"       a blurred box shadow (scenefx style) instead of the old hard\n"
+	"       outward-fading ring.  The FBO padding (3.5 * sigma) is where\n"
+	"       the gaussian has faded to ~0.2%, so the cut at the padding\n"
+	"       edge is invisible. */\n"
+	"    float s2 = u_shadow_sigma * u_shadow_sigma;\n"
+	"    shadow_a = u_shadow_alpha * exp(-0.5 * sd * sd / s2);\n"
 	"  }\n"
-	"  /* composite: window over its shadow (both premultiplied) */\n"
-	"  vec3 rgb = win_rgb + bcolor.rgb * shadow_a * (1.0 - win_a);\n"
+	"  /* composite: window over its shadow (both premultiplied); the\n"
+	"     shadow color is independent of the border color */\n"
+	"  vec3 rgb = win_rgb + u_shadow_color.rgb * shadow_a * (1.0 - win_a);\n"
 	"  float a = win_a + shadow_a * (1.0 - win_a);\n"
 	"  gl_FragColor = vec4(rgb, a);\n"
 	"}\n";
@@ -205,7 +213,8 @@ struct rounded_cache {
 	GLint u_border_gradient;
 	GLint u_window_origin;
 	GLint u_window_size;
-	GLint u_shadow_width;
+	GLint u_shadow_sigma;
+	GLint u_shadow_color;
 	GLint u_shadow_alpha;
 };
 
@@ -310,7 +319,8 @@ static bool rounded_gl_init(struct rounded_cache *rc) {
 	rc->u_border_gradient = glGetUniformLocation(rc->program, "u_border_gradient");
 	rc->u_window_origin = glGetUniformLocation(rc->program, "u_window_origin");
 	rc->u_window_size = glGetUniformLocation(rc->program, "u_window_size");
-	rc->u_shadow_width = glGetUniformLocation(rc->program, "u_shadow_width");
+	rc->u_shadow_sigma = glGetUniformLocation(rc->program, "u_shadow_sigma");
+	rc->u_shadow_color = glGetUniformLocation(rc->program, "u_shadow_color");
 	rc->u_shadow_alpha = glGetUniformLocation(rc->program, "u_shadow_alpha");
 
 	static const float quad[] = {
@@ -711,10 +721,13 @@ static bool rounded_render_mask(struct rounded_cache *rc,
 		(float)rc->shadow_px);
 	glUniform2f(rc->u_window_size, (float)rc->window_pw,
 		(float)rc->window_ph);
-	/* the padding is constant (always the maximum shadow width); the actual
-	 * shadow ring follows focus through this uniform */
-	glUniform1f(rc->u_shadow_width, shadow_width(rc->tl) * rc->scale);
+	/* the padding is constant (always the maximum gaussian shadow extent);
+	 * whether a shadow is drawn at all follows focus: sigma is 0 for
+	 * unfocused windows.  The shadow color is independent of the border. */
+	glUniform1f(rc->u_shadow_sigma, shadow_sigma(rc->tl) * rc->scale);
 	glUniform1f(rc->u_shadow_alpha, shadow_alpha());
+	struct wlr_render_color shcol = shadow_color();
+	glUniform4f(rc->u_shadow_color, shcol.r, shcol.g, shcol.b, shcol.a);
 	glUniform1f(rc->u_radius, (float)CONFIG_ROUNDED_RADIUS * rc->scale);
 	glUniform1f(rc->u_border_width, border_width(rc->tl) * rc->scale);
 	struct wlr_render_color border = border_color(rc->server, rc->tl);
@@ -1301,9 +1314,10 @@ void rounded_render_all(struct server *server) {
 		if (scale <= 0.0f) {
 			scale = 1.0f;
 		}
-		/* the FBO always reserves the maximum shadow padding, so focus
-		 * transitions never resize it and stay mask-only re-renders */
-		float shadow_w = (float)CONFIG_SHADOW_WIDTH;
+		/* the FBO always reserves the maximum shadow padding (derived from
+		 * the gaussian sigma), so focus transitions never resize it and
+		 * stay mask-only re-renders */
+		float shadow_w = (float)shadow_padding();
 
 		if (!rc->content_dirty && !rc->mask_dirty &&
 				rc->logical_width == box.width &&

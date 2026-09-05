@@ -30,14 +30,16 @@
 #define CONFIG_BORDER_GRADIENT_WIDTH 10       /* 顶部边框三段颜色拼接处渐变宽度 (px) */
 
 #define CONFIG_FULLSCREEN_BORDER 1              /* 全屏窗口是否显示边框 0/1 */
-#define CONFIG_FULLSCREEN_BORDER_COLOR 0xE78284 /* 全屏边框颜色 0xRRGGBB */
+#define CONFIG_FULLSCREEN_BORDER_COLOR 0xb87898 /* 全屏边框颜色 0xRRGGBB */
 
-#define CONFIG_SHADOW_WIDTH      20          /* 窗口阴影宽度 (px) */
-#define CONFIG_SHADOW_ALPHA      0.1f        /* 窗口阴影不透明度 0.0-1.0 */
+// 窗口阴影 (scenefx 风格高斯柔影, 颜色独立于边框色):
+#define CONFIG_SHADOW_BLUR_SIGMA 25.0f
+#define CONFIG_SHADOW_COLOR      0x000000
+#define CONFIG_SHADOW_ALPHA      0.25f
 
 #define CONFIG_TITLEBAR_HEIGHT  6           /* 移动窗口标题栏范围 */
 #define CONFIG_EDGE_THICKNESS   6           /* 调整窗口大小边框范围 */
-#define CONFIG_RESIZE_DRAW_CONTENTS 0        /* 1 = 实时 resize 客户端; 0 = 拖动时只画轮廓、松开再应用 (边缘跟手) */
+#define CONFIG_RESIZE_DRAW_CONTENTS 1        /* 1 = 实时 resize 客户端; 0 = 拖动时只画轮廓、松开再应用 (边缘跟手) */
 #define CONFIG_RESIZE_FINAL_TIMEOUT_MS 500  /* outline 模式: 松开后客户端迟迟不提交最终尺寸时的强制结束宽限 */
 
 #define CONFIG_DOUBLE_CLICK_NS (400 * 1000000L) /* double-click window (ns) */
